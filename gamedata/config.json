@@ -1,0 +1,15 @@
+{
+    "bot": {
+        "command_prefix": "!",
+        "default_channel": null,
+        "log_channel": null
+    },
+    "game": {
+        "max_history": 5,
+        "response_max_length": 500
+    },
+    "ai": {
+        "model": "gemini-2.5-flash-lite",
+        "temperature": 0.8
+    }
+}
