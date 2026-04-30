@@ -130,6 +130,59 @@ def format_npc_data():
     return npc_info
 
 
+
+def select_relevant_npcs(location: str, player_action: str, relations: dict | None, limit: int = 8) -> list:
+    """簡易 RAG：只挑本輪可能相關的 NPC，避免把全 NPC 資料塞進 prompt。"""
+    all_npcs = get_npcs()
+    rel_npcs = (relations or {}).get('npcs', {})
+    selected = []
+    seen = set()
+
+    def add(npc):
+        name = npc.get('name')
+        if name and name not in seen:
+            selected.append(npc)
+            seen.add(name)
+
+    for npc in all_npcs:
+        if npc.get('location') == location:
+            add(npc)
+
+    for npc in all_npcs:
+        name = npc.get('name', '')
+        title = npc.get('title', '')
+        if (name and name in player_action) or (title and title in player_action):
+            add(npc)
+
+    for npc in all_npcs:
+        name = npc.get('name', '')
+        rel = rel_npcs.get(name, {})
+        if abs(rel.get('好感度', 0)) >= 60 or rel.get('alive') is False:
+            add(npc)
+
+    return selected[:limit]
+
+
+def format_selected_npc_data(npcs: list) -> str:
+    """將挑選後的 NPC 資料格式化為 AI 可讀提示。"""
+    if not npcs:
+        return "（本輪無直接相關 NPC。若需 NPC 介入，必須符合地點、位階與劇情因果。）"
+    npc_info = ""
+    for npc in npcs:
+        npc_info += f"【{npc['name']}】{npc.get('title', '')}\n"
+        npc_info += f"  位置：{npc.get('location', '未知')}\n"
+        npc_info += f"  性格：{npc.get('personality', '無')}\n"
+        stats = npc.get('stats', {})
+        if stats:
+            stats_str = "、".join(f"{k}:{v}" for k, v in stats.items())
+            npc_info += f"  能力值：{stats_str}\n"
+        hidden = npc.get('hidden', {})
+        if hidden.get('hidden_agenda'):
+            agenda = hidden['hidden_agenda'][:80]
+            npc_info += f"  潛在意圖：{agenda}...\n"
+        npc_info += "\n"
+    return npc_info
+
 def get_scene_npcs(location: str) -> str:
     """取得當前場景中的 NPC 名單"""
     npcs = get_npcs()
@@ -159,7 +212,9 @@ def format_player_relations(relations):
             emotion = data.get('emotion_state', {})
             anger = emotion.get('anger', 0)
             fear = emotion.get('fear', 0)
-            rel_info += f"• {npc_id}：好感度 {好感度}（{tier}），恩怨：{恩怨}，憤怒：{anger}，恐懼：{fear}\n"
+            alive = data.get('alive', True)
+            life_state = "已死亡，不得登場、不得說話、不得被其他角色當作仍活著互動" if alive is False else "存活"
+            rel_info += f"• {npc_id}：{life_state}，好感度 {好感度}（{tier}），恩怨：{恩怨}，憤怒：{anger}，恐懼：{fear}\n"
 
     active_companions = {k: v for k, v in companions.items() if v.get('appear_count', 0) >= 3}
     if active_companions:
@@ -289,7 +344,8 @@ def update_npc_emotions(user_id, scene_npc_names: list, extreme_flags: dict):
         if npc_name not in relations['npcs']:
             relations['npcs'][npc_name] = {
                 '好感度': 0, '恩怨': '無',
-                'emotion_state': {'anger': 0, 'fear': 0}
+                'emotion_state': {'anger': 0, 'fear': 0},
+                'alive': True
             }
         emotion = relations['npcs'][npc_name].setdefault(
             'emotion_state', {'anger': 0, 'fear': 0}
@@ -358,7 +414,8 @@ def update_npc_affection(user_id, npc_name: str, delta: int):
     if npc_name not in npcs:
         npcs[npc_name] = {
             '好感度': 10, '恩怨': '初次見面',
-            'emotion_state': {'anger': 0, 'fear': 0}
+            'emotion_state': {'anger': 0, 'fear': 0},
+            'alive': True
         }
     current = npcs[npc_name].get('好感度', 10)
     npcs[npc_name]['好感度'] = max(-100, min(100, current + delta))
@@ -436,7 +493,7 @@ def extract_key_info(dialogue_pair: dict) -> str:
 def manage_memory(user_id):
     """
     滾動式記憶管理：
-    當短期記憶 >= 11 筆時，壓縮最舊的 2 筆為長期記憶條目。
+    當短期記憶 >= 10 筆時，壓縮最舊的 2 筆為長期記憶條目。
     長期記憶以帶編號列表儲存（最多 15 條）。
     """
     memory = load_player_memory(user_id)
@@ -446,7 +503,7 @@ def manage_memory(user_id):
     short_term = memory.get('short_term', [])
     long_term = memory.get('long_term_summary', '')
 
-    if len(short_term) < 11:
+    if len(short_term) < 10:
         return
 
     old_dialogues = short_term[:2]
@@ -593,6 +650,217 @@ async def call_gemini(system: str, user: str, model: str = None,
         print(f"⚠️ Gemini 呼叫失敗：{e}")
         return None
 
+
+
+def extract_json_object(text: str) -> dict | None:
+    """從模型輸出中解析 JSON；容忍 ```json fence 或前後雜訊。"""
+    if not text:
+        return None
+    cleaned = text.strip()
+    cleaned = re.sub(r"^```(?:json)?\s*", "", cleaned)
+    cleaned = re.sub(r"\s*```$", "", cleaned)
+    try:
+        return json.loads(cleaned)
+    except Exception:
+        pass
+    start = cleaned.find('{')
+    end = cleaned.rfind('}')
+    if start != -1 and end != -1 and end > start:
+        try:
+            return json.loads(cleaned[start:end + 1])
+        except Exception:
+            return None
+    return None
+
+
+async def call_gemini_json(system: str, user: str, model: str = None,
+                           temperature: float = 0.65, max_tokens: int = 1000) -> dict | None:
+    """Gemini JSON 呼叫。優先要求 application/json；失敗時回傳 None。"""
+    try:
+        model_name = model or GM_MODEL
+        gemini_model = genai.GenerativeModel(
+            model_name=model_name,
+            system_instruction=system,
+            generation_config=genai.types.GenerationConfig(
+                max_output_tokens=max_tokens,
+                temperature=temperature,
+                response_mime_type="application/json"
+            )
+        )
+        resp = await gemini_model.generate_content_async(user)
+        if resp.prompt_feedback.block_reason:
+            print(f"⚠️ Gemini 安全過濾：{resp.prompt_feedback.block_reason.name}")
+            return None
+        return extract_json_object(resp.text)
+    except Exception as e:
+        print(f"⚠️ Gemini JSON 呼叫失敗：{e}")
+        return None
+
+
+def default_state_update() -> dict:
+    return {"location": None, "alive": None, "attributes_delta": {}, "inventory_add": [], "inventory_remove": [], "relations_delta": {}, "facts_add": []}
+
+
+def normalize_ai_payload(data: dict | None) -> dict | None:
+    if not isinstance(data, dict):
+        return None
+    reply = data.get('reply') or data.get('narration') or data.get('text')
+    if not isinstance(reply, str) or not reply.strip():
+        return None
+    update = data.get('state_update') if isinstance(data.get('state_update'), dict) else {}
+    base = default_state_update()
+    base.update(update)
+    data['reply'] = reply.strip()
+    data['state_update'] = base
+    return data
+
+
+def get_dead_npc_names(relations: dict | None) -> list[str]:
+    if not relations:
+        return []
+    return [name for name, data in relations.get('npcs', {}).items() if data.get('alive') is False]
+
+
+def detect_kill_targets(text: str, known_names: list[str]) -> list[str]:
+    return [name for name in known_names if name and name in text]
+
+
+def validate_ai_output(data: dict, relations: dict | None, input_type: str, kill_targets: list[str]) -> tuple[bool, str]:
+    reply = data.get('reply', '')
+    update = data.get('state_update', {})
+    if not reply.strip():
+        return False, "缺少 reply"
+    if not isinstance(update, dict):
+        return False, "state_update 必須是 object"
+    for dead_name in get_dead_npc_names(relations):
+        if f"{dead_name}道" in reply or f"{dead_name}說" in reply or f"{dead_name}冷笑" in reply:
+            return False, f"已死亡 NPC「{dead_name}」仍在行動或說話"
+    if input_type == 'KILL_CMD' and kill_targets:
+        rel_delta = update.get('relations_delta', {})
+        missing = [name for name in kill_targets if rel_delta.get(name, {}).get('alive') is not False]
+        if missing:
+            return False, f"殺戮指令未把目標標記為死亡：{'、'.join(missing)}"
+    return True, ""
+
+
+def clamp_int(value, low: int, high: int, default: int = 0) -> int:
+    try:
+        return max(low, min(high, int(value)))
+    except Exception:
+        return default
+
+
+def apply_state_update(user_id, update: dict):
+    """把模型輸出的 state_update 寫回玩家 JSON 檔。"""
+    if not isinstance(update, dict):
+        return
+    status = load_player_status(user_id) or {}
+    inventory = load_player_inventory(user_id) or {"items": []}
+    relations = load_player_relations(user_id) or {"npcs": {}, "companions": {}}
+    memory = load_player_memory(user_id) or {"long_term_summary": "", "short_term": [], "fact_sheet": "", "fact_sheet_items": []}
+
+    if update.get("location"):
+        status["location"] = str(update["location"])
+    if update.get("alive") is not None:
+        status["alive"] = bool(update["alive"])
+
+    attrs = status.setdefault("attributes", {})
+    for attr, delta in (update.get("attributes_delta") or {}).items():
+        try:
+            attrs[attr] = clamp_int(attrs.get(attr, 0) + int(delta), 0, 100, attrs.get(attr, 0))
+        except Exception:
+            pass
+
+    items = inventory.setdefault("items", [])
+    for item in update.get("inventory_add") or []:
+        item = str(item).strip()
+        if item and item not in items:
+            items.append(item)
+    for item in update.get("inventory_remove") or []:
+        item = str(item).strip()
+        if item in items:
+            items.remove(item)
+
+    rel_npcs = relations.setdefault("npcs", {})
+    for npc, delta_data in (update.get("relations_delta") or {}).items():
+        if not isinstance(delta_data, dict):
+            continue
+        npc_data = rel_npcs.setdefault(npc, {"好感度": 0, "恩怨": "無", "emotion_state": {"anger": 0, "fear": 0}, "alive": True})
+        if "好感度" in delta_data:
+            try:
+                npc_data["好感度"] = clamp_int(npc_data.get("好感度", 0) + int(delta_data["好感度"]), -100, 100)
+            except Exception:
+                pass
+        if "恩怨" in delta_data and delta_data["恩怨"]:
+            npc_data["恩怨"] = str(delta_data["恩怨"])[:120]
+        emotion = npc_data.setdefault("emotion_state", {"anger": 0, "fear": 0})
+        if "anger" in delta_data:
+            try:
+                emotion["anger"] = clamp_int(emotion.get("anger", 0) + int(delta_data["anger"]), 0, 100)
+            except Exception:
+                pass
+        if "fear" in delta_data:
+            try:
+                emotion["fear"] = clamp_int(emotion.get("fear", 0) + int(delta_data["fear"]), 0, 100)
+            except Exception:
+                pass
+        if "alive" in delta_data:
+            npc_data["alive"] = bool(delta_data["alive"])
+            if npc_data["alive"] is False and npc_data.get("恩怨", "無") == "無":
+                npc_data["恩怨"] = "已死亡"
+
+    facts = update.get("facts_add") or []
+    if facts:
+        fact_items = memory.setdefault("fact_sheet_items", [])
+        for fact in facts:
+            fact = str(fact).strip()
+            if fact:
+                fact_items.append(f"[劇情事實] {fact[:120]}")
+        memory["fact_sheet_items"] = fact_items[-10:]
+        memory["fact_sheet"] = "\n".join(memory["fact_sheet_items"])
+
+    save_player_data(user_id, "status", status)
+    save_player_data(user_id, "inventory", inventory)
+    save_player_data(user_id, "relations", relations)
+    save_player_data(user_id, "memory", memory)
+
+
+def build_json_output_contract(input_type: str, kill_targets: list[str]) -> str:
+    kill_note = ""
+    if input_type == 'KILL_CMD':
+        if kill_targets:
+            target_lines = "\n".join(f'      "{name}": {{"alive": false, "恩怨": "被玩家下令處死"}}' for name in kill_targets)
+            kill_note = f"\n殺戮指令已確認目標：{'、'.join(kill_targets)}。relations_delta 必須包含：\n{target_lines}\n"
+        else:
+            kill_note = "\n玩家使用了殺戮指令；若文本中有明確目標，必須在 relations_delta 中把該 NPC alive 設為 false。\n"
+    return f"""
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+【輸出格式強制要求】
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+只輸出合法 JSON。不得輸出 Markdown、不得加 ```、不得在 JSON 外加解釋。
+{kill_note}
+JSON schema：
+{{
+  "reply": "給玩家看的劇情文字。必須接續上一幕，回應玩家本輪行動。",
+  "state_update": {{
+    "location": null,
+    "alive": null,
+    "attributes_delta": {{"體力": 0, "權謀": 0, "聲望": 0, "財產": 0}},
+    "inventory_add": [],
+    "inventory_remove": [],
+    "relations_delta": {{
+      "NPC名稱": {{"好感度": 0, "anger": 0, "fear": 0, "alive": true, "恩怨": ""}}
+    }},
+    "facts_add": []
+  }}
+}}
+規則：
+1. 沒有變動的欄位用 null、空 object 或空 array。
+2. attributes_delta 與 relations_delta 只能填「變化量」，不能填總值。
+3. facts_add 只放確定已發生、後續不能推翻的關鍵事實，每條 120 字內。
+4. reply 不得替玩家決定內心、不得代替玩家做未聲明的主動行為。
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+"""
 
 # ============================================================
 # UI 組件
@@ -870,7 +1138,7 @@ async def ooc(interaction: discord.Interaction, *, correction: str):
     attributes = status.get('attributes', {}) if status else {}
     # ── 修正3：只保留最近 3 輪 ──
     history_summary = build_history_summary(short_term)
-    npc_database = format_npc_data()
+    npc_database = format_selected_npc_data(select_relevant_npcs(location, correction, load_player_relations(interaction.user.id)))
     # ── 修正2：注入事實清單 ──
     fact_sheet = load_fact_sheet(interaction.user.id)
     fact_section = f"\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n已確認事實清單（最高優先級，不得違背）\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n{fact_sheet if fact_sheet else '（尚無修正記錄）'}\n" if fact_sheet else ""
@@ -1009,7 +1277,7 @@ async def on_message(message):
 
                 scene_npcs_str = get_scene_npcs(location)
                 scene_npc_list = [n.strip() for n in scene_npcs_str.split('、') if n.strip() and n != '無']
-                npc_database = format_npc_data()
+                npc_database = ""  # 先分類玩家輸入後，再用 select_relevant_npcs() 建立
 
                 # ── 修正3：只注入最近 3 輪 ──
                 history_summary = build_history_summary(short_term)
@@ -1019,6 +1287,10 @@ async def on_message(message):
 
                 # ── 修正1：辨識指令類型 ──
                 input_type, cleaned_action = classify_player_input(message.content)
+
+                # ── 本輪相關 NPC 檢索（簡易 RAG）──
+                selected_npcs = select_relevant_npcs(location, cleaned_action, relations)
+                npc_database = format_selected_npc_data(selected_npcs)
 
                 # ── 好感度自動偵測（雙軌制 — 關鍵字軌）──
                 affection_delta = detect_affection_change(message.content)
@@ -1083,24 +1355,54 @@ async def on_message(message):
                 if overrides:
                     action_prompt += "\n\n" + "\n\n".join(overrides)
 
-                text = await call_gemini(gm_system, action_prompt)
-                if not text:
-                    await message.reply("⚠️ 此段劇情觸動禁忌，宮中傳訊受阻，請換個方向行動。")
+                known_npc_names = [npc.get('name', '') for npc in get_npcs()]
+                kill_targets = detect_kill_targets(cleaned_action, known_npc_names) if input_type == 'KILL_CMD' else []
+                action_prompt += build_json_output_contract(input_type, kill_targets)
+
+                payload = None
+                last_error = ""
+                for attempt in range(2):
+                    retry_prompt = action_prompt
+                    if last_error:
+                        retry_prompt += f"\n\n上一版輸出違規：{last_error}。請修正後只輸出合法 JSON。"
+
+                    raw_payload = await call_gemini_json(gm_system, retry_prompt)
+                    payload = normalize_ai_payload(raw_payload)
+                    if not payload:
+                        last_error = "不是合法 JSON，或缺少 reply/state_update"
+                        continue
+
+                    ok, reason = validate_ai_output(payload, relations, input_type, kill_targets)
+                    if ok:
+                        break
+                    last_error = reason
+                    payload = None
+
+                if not payload:
+                    await message.reply(f"⚠️ 此段劇情生成失敗：{last_error or '輸出格式不合規'}。請換個方向行動。")
                     return
+
+                text = payload['reply']
+                apply_state_update(message.author.id, payload['state_update'])
 
                 await message.reply(text)
 
                 # 追蹤 AI 回應中出現的隨侍人物
                 update_companion_tracking(message.author.id, text)
 
-                # 更新短期記憶（只保留最近 10 筆）
+                # 更新短期記憶；先保存完整列表，再交給 manage_memory() 壓縮
+                memory = load_player_memory(message.author.id) or memory
                 if memory:
+                    short_term = memory.get('short_term', [])
                     short_term.append({"user": message.content, "bot": text})
-                    short_term = short_term[-10:]
                     memory['short_term'] = short_term
                     save_player_data(message.author.id, 'memory', memory)
-
                     manage_memory(message.author.id)
+
+                    memory = load_player_memory(message.author.id)
+                    if memory and len(memory.get('short_term', [])) > 10:
+                        memory['short_term'] = memory['short_term'][-10:]
+                        save_player_data(message.author.id, 'memory', memory)
 
             except Exception as e:
                 print(f"Error: {e}")
