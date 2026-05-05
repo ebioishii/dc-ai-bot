@@ -6,35 +6,38 @@ from game.state import _active_summons, default_state_update
 CHOICE_STYLES = {"humble", "probe", "observe", "flatter", "confront", "retreat", "wait", "use_item", "other"}
 CHOICE_RISKS = {"low", "medium", "high"}
 
-def validate_story_output_reason(story_result, authoritative_result, game_state):
+def validate_story_output_reason(story_result, authoritative_result, game_state, choices_required: bool = True):
     if not isinstance(story_result, dict):
         return False, "story_result is not an object"
     reply = story_result.get("reply", "")
     if not isinstance(reply, str) or not reply.strip():
         return False, "missing reply"
     choices = story_result.get("choices")
-    if not isinstance(choices, list) or not (2 <= len(choices) <= 4):
-        return False, "choices must contain 2-4 items"
-    for choice in choices:
-        if not isinstance(choice, dict) or not str(choice.get("id", "")).strip() or not str(choice.get("text", "")).strip():
-            return False, "each choice must have id and text"
-        if choice.get("style") not in CHOICE_STYLES:
-            return False, "each choice must include a valid style"
-        if choice.get("risk") not in CHOICE_RISKS:
-            return False, "each choice must include a valid risk"
-        if not str(choice.get("effect_hint", "")).strip():
-            return False, "each choice must include effect_hint"
-        mech = choice.get("mechanical_effect")
-        if not isinstance(mech, dict):
-            return False, "each choice must include mechanical_effect"
-    styles = {choice.get("style") for choice in choices if isinstance(choice, dict)}
-    risks = {choice.get("risk") for choice in choices if isinstance(choice, dict)}
-    if len(styles) < 2:
-        return False, "choices must include at least two different styles"
-    if "low" not in risks:
-        return False, "choices must include at least one low risk option"
-    if not ({"medium", "high"} & risks):
-        return False, "choices must include a higher-risk option"
+    if choices_required:
+        if not isinstance(choices, list) or not (2 <= len(choices) <= 4):
+            return False, "choices must contain 2-4 items"
+        for choice in choices:
+            if not isinstance(choice, dict) or not str(choice.get("id", "")).strip() or not str(choice.get("text", "")).strip():
+                return False, "each choice must have id and text"
+            if choice.get("style") not in CHOICE_STYLES:
+                return False, "each choice must include a valid style"
+            if choice.get("risk") not in CHOICE_RISKS:
+                return False, "each choice must include a valid risk"
+            if not str(choice.get("effect_hint", "")).strip():
+                return False, "each choice must include effect_hint"
+            mech = choice.get("mechanical_effect")
+            if not isinstance(mech, dict):
+                return False, "each choice must include mechanical_effect"
+        styles = {choice.get("style") for choice in choices if isinstance(choice, dict)}
+        risks = {choice.get("risk") for choice in choices if isinstance(choice, dict)}
+        if len(styles) < 2:
+            return False, "choices must include at least two different styles"
+        if "low" not in risks:
+            return False, "choices must include at least one low risk option"
+        if not ({"medium", "high"} & risks):
+            return False, "choices must include a higher-risk option"
+    elif not isinstance(choices, list):
+        choices = []
     output_text = reply + "\n" + "\n".join(str(choice.get("text", "")) for choice in choices if isinstance(choice, dict))
 
     hidden_leak_patterns = (
@@ -82,8 +85,8 @@ def validate_story_output_reason(story_result, authoritative_result, game_state)
     return True, ""
 
 
-def validate_story_output(story_result, authoritative_result, game_state):
-    ok, _ = validate_story_output_reason(story_result, authoritative_result, game_state)
+def validate_story_output(story_result, authoritative_result, game_state, choices_required: bool = True):
+    ok, _ = validate_story_output_reason(story_result, authoritative_result, game_state, choices_required=choices_required)
     return ok
 
 

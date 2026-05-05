@@ -1,4 +1,5 @@
 import os
+import asyncio
 import discord
 from discord import app_commands
 from discord.ext import commands
@@ -12,6 +13,15 @@ from game.state import (
     get_locations, _load_gamedata_bundle, apply_state_update,
 )
 from game.memory import load_fact_sheet, update_fact_sheet, build_history_summary, update_memory
+from game.context import (
+    build_model_context, classify_event_size, output_length_policy,
+    should_offer_choices, normalize_scene_state,
+)
+from game.performance import elapsed_ms, estimate_tokens, log_reply_performance, now_ms
+from game.quality import (
+    finalize_story_result, inspect_story_quality, natural_next_step_hint,
+    sanitize_player_visible_text,
+)
 from game.npc import (
     select_relevant_npcs, format_selected_npc_data, get_scene_npcs,
     detect_extreme_action, update_npc_emotions, build_emotion_override,
@@ -122,7 +132,10 @@ class StartModal(discord.ui.Modal):
             "long_term_summary": "",
             "short_term": [],
             "fact_sheet": "",
-            "fact_sheet_items": []
+            "fact_sheet_items": [],
+            "scene_summary": "",
+            "scene_state": {},
+            "summary_turns_since_update": 0
         }
         save_player_data(user_id, 'memory', memory)
 
@@ -401,27 +414,27 @@ async def ooc(interaction: discord.Interaction, *, correction: str):
     ) + fact_section
 
     try:
-        text = await call_gemini(gm_system, full_prompt)
+        text = await call_gemini(gm_system, full_prompt, use_prompt_cache=True)
         if not text:
-            await interaction.channel.send("⚠️ 修正劇情觸動禁忌，無法生成，請換個修正方向。")
+            await interaction.followup.send("修正劇情觸動禁忌，無法生成，請換個修正方向。", ephemeral=True)
             return
 
-        await interaction.channel.send(
-            f"🔄 **劇情修正**\n> 修正意見：{correction}\n\n{text}"
-        )
+        text = sanitize_player_visible_text(text)
+        await interaction.followup.send("已記錄修正，玩家頻道只會顯示修正後劇情。", ephemeral=True)
+        await interaction.channel.send(text)
 
         # ── 修正2：更新事實清單 ──
         update_fact_sheet(interaction.user.id, correction, text[:80])
 
         # 儲存修正後的劇情
-        short_term.append({"user": f"[OOC修正] {correction}", "bot": text})
+        short_term.append({"user": f"玩家要求校正上一幕：{correction}", "bot": text})
         short_term = short_term[-10:]
         if memory:
             memory['short_term'] = short_term
             save_player_data(interaction.user.id, 'memory', memory)
 
     except Exception as e:
-        await interaction.channel.send(f"⚠️ 修正失敗：{e}")
+        await interaction.followup.send(f"修正失敗：{e}", ephemeral=True)
 
 
 @bot.tree.command(name="op", description="GM 指令 - 直接修改遊戲狀態")
@@ -459,21 +472,23 @@ async def op_cmd(interaction: discord.Interaction, *, command: str):
     )
 
     try:
-        text = await call_gemini(gm_system, full_prompt)
+        text = await call_gemini(gm_system, full_prompt, use_prompt_cache=True)
         if not text:
-            await interaction.channel.send("⚠️ 指令執行被攔截，請調整指令內容後重試。")
+            await interaction.followup.send("指令執行被攔截，請調整指令內容後重試。", ephemeral=True)
             return
 
-        await interaction.channel.send(f"⚡ **GM 指令執行**\n> 指令：{command}\n\n{text}")
+        text = sanitize_player_visible_text(text)
+        await interaction.followup.send("GM 指令已執行，玩家頻道只會顯示結果敘事。", ephemeral=True)
+        await interaction.channel.send(text)
 
         if memory:
-            short_term.append({"user": f"[OP] {command}", "bot": text})
+            short_term.append({"user": f"GM 調整：{command}", "bot": text})
             short_term = short_term[-10:]
             memory['short_term'] = short_term
             save_player_data(interaction.user.id, 'memory', memory)
 
     except Exception as e:
-        await interaction.channel.send(f"⚠️ 指令執行失敗：{e}")
+        await interaction.followup.send(f"指令執行失敗：{e}", ephemeral=True)
 
 
 @bot.tree.command(name="relation", description="手動調整與 NPC 的好感度（GM 校正用）")
@@ -492,151 +507,301 @@ async def relation_cmd(interaction: discord.Interaction, npc: str, delta: int):
 
 
 # ============================================================
-# 訊息處理（核心流程）
-# ── 修正1：指令分類 → 修正4：情緒偵測 → 組裝 prompt ──
+# 訊息處理（非阻塞 per-channel queue）
 # ============================================================
+
+CHANNEL_QUEUES: dict[int, asyncio.Queue] = {}
+CHANNEL_WORKERS: dict[int, asyncio.Task] = {}
+
 
 @bot.event
 async def on_message(message):
     if message.author.bot:
         return
 
-    profile = load_player_profile(message.author.id)
-    status = load_player_status(message.author.id)
-    memory = load_player_memory(message.author.id)
+    if message.content.startswith('!'):
+        await bot.process_commands(message)
+        return
 
-    if profile and not message.content.startswith('!'):
-        async with message.channel.typing():
-            try:
-                game_rules = format_game_rules()
-                gm_system = make_gm_system_instruction(game_rules)
-
-                long_term = memory.get('long_term_summary', '') if memory else ''
-                short_term = memory.get('short_term', []) if memory else []
-
-                location = status.get('location', '未知') if status else '未知'
-                attributes = status.get('attributes', {}) if status else {}
-
-                relations = load_player_relations(message.author.id)
-                player_relations_str = format_player_relations(relations)
-
-                scene_npcs_str = get_scene_npcs(location)
-                scene_npc_list = [n.strip() for n in scene_npcs_str.split('、') if n.strip() and n != '無']
-
-                # ── 修正3：只注入最近 3 輪 ──
-                history_summary = build_history_summary(short_term)
-
-                # ── 修正2：注入事實清單 ──
-                fact_sheet = load_fact_sheet(message.author.id)
-
-                # ── 修正1：辨識指令類型 ──
-                resolved_content = resolve_choice_input(message.content, status)
-                input_type, cleaned_action = classify_player_input(resolved_content)
-
-                # ── 好感度自動偵測（雙軌制 — 關鍵字軌）──
-                affection_delta = detect_affection_change(message.content)
-                if affection_delta != 0 and scene_npc_list:
-                    for npc_name in scene_npc_list:
-                        update_npc_affection(message.author.id, npc_name, affection_delta)
-                    relations = load_player_relations(message.author.id)
-                    player_relations_str = format_player_relations(relations)
-
-                # ── 修正4：偵測極端行為並更新 NPC 情緒 ──
-                extreme_flags = detect_extreme_action(message.content)
-                emotion_override = ""
-                if (extreme_flags['is_insult'] or extreme_flags['is_violence']) and scene_npc_list:
-                    updated_relations, triggered_npcs = update_npc_emotions(
-                        message.author.id, scene_npc_list, extreme_flags
-                    )
-                    relations = updated_relations
-                    player_relations_str = format_player_relations(relations)
-                    emotion_override = build_emotion_override(triggered_npcs)
-
-                game_state = {
-                    "profile": profile,
-                    "status": status or {},
-                    "location": location,
-                    "attributes": attributes,
-                    "scene_npcs": scene_npc_list,
-                    "relations": relations or {"npcs": {}, "companions": {}},
-                    "history_summary": history_summary,
-                    "input_type": input_type
-                }
-                inventory = load_player_inventory(message.author.id) or {"items": []}
-                gamedata = _load_gamedata_bundle()
-                relations = ensure_hidden_state(relations, gamedata, game_state, cleaned_action)
-                save_player_data(message.author.id, "relations", relations)
-                game_state["relations"] = relations
-
-                judge_system, judge_prompt = build_judge_prompt(
-                    cleaned_action,
-                    game_state,
-                    memory,
-                    relations,
-                    inventory
-                )
-                judge_result = await call_judge_ai(judge_system, judge_prompt)
-
-                authoritative_result = resolve_rules(
-                    judge_result,
-                    game_state,
-                    memory,
-                    relations,
-                    inventory,
-                    gamedata
-                )
-
-                selected_npcs = select_relevant_npcs(location, cleaned_action, relations, limit=5)
-                selected_lore = {
-                    "game_rules": game_rules,
-                    "fact_sheet": fact_sheet,
-                    "player_relations": player_relations_str,
-                    "emotion_override": emotion_override,
-                    "history_summary": history_summary,
-                    "long_term_summary": long_term
-                }
-                story_system, story_prompt = build_story_prompt(
-                    cleaned_action,
-                    judge_result,
-                    authoritative_result,
-                    selected_lore,
-                    selected_npcs,
-                    game_state,
-                    memory
-                )
-
-                story_result = await call_story_ai(story_system, story_prompt)
-                ok, last_error = validate_story_output_reason(story_result, authoritative_result, game_state)
-                if not ok:
-                    retry_prompt = (
-                        story_prompt
-                        + f"\n\nPrevious story output failed validation: {last_error}. "
-                        + "Return corrected JSON only, preserving authoritative_result."
-                    )
-                    story_result = await call_story_ai(story_system, retry_prompt)
-                    ok, last_error = validate_story_output_reason(story_result, authoritative_result, game_state)
-
-                if not ok:
-                    story_result = fallback_story_result(authoritative_result)
-
-                text = format_story_reply(story_result)
-                await message.reply(text)
-
-                authoritative_result["state_update"].setdefault("status_set", {})["last_choices"] = compact_choices_for_status(story_result)
-                apply_state_update(message.author.id, authoritative_result["state_update"])
-
-                try:
-                    # 追蹤 AI 回應中出現的隨侍人物
-                    update_companion_tracking(message.author.id, story_result.get("reply", ""))
-                    update_memory(message.author.id, message.content, text)
-                except Exception as post_error:
-                    print(f"Post-reply maintenance error: {post_error}")
-
-            except Exception as e:
-                print(f"Error: {e}")
-                await message.reply("⚠️ 宮中傳訊受阻，請稍後再試。")
+    if load_player_profile(message.author.id):
+        try:
+            await message.channel.trigger_typing()
+        except Exception:
+            pass
+        queue_player_message(message)
+        return
 
     await bot.process_commands(message)
+
+
+def queue_player_message(message):
+    channel_id = int(message.channel.id)
+    queue = CHANNEL_QUEUES.setdefault(channel_id, asyncio.Queue())
+    queue.put_nowait(message)
+    worker = CHANNEL_WORKERS.get(channel_id)
+    if worker is None or worker.done():
+        CHANNEL_WORKERS[channel_id] = asyncio.create_task(process_channel_queue(channel_id))
+
+
+async def process_channel_queue(channel_id: int):
+    queue = CHANNEL_QUEUES[channel_id]
+    while True:
+        try:
+            message = await asyncio.wait_for(queue.get(), timeout=30)
+        except asyncio.TimeoutError:
+            if queue.empty():
+                CHANNEL_QUEUES.pop(channel_id, None)
+                CHANNEL_WORKERS.pop(channel_id, None)
+                return
+            continue
+        try:
+            async with message.channel.typing():
+                await handle_player_message(message)
+        finally:
+            queue.task_done()
+
+
+async def handle_player_message(message):
+    total_start = now_ms()
+    model_duration_ms = 0
+    input_tokens_est = 0
+    retry_count = 0
+    summary_info = {"summary_triggered": False, "summary_used": False, "recent_turns": 0}
+
+    try:
+        profile = load_player_profile(message.author.id)
+        status = load_player_status(message.author.id)
+        memory = load_player_memory(message.author.id) or {}
+        if not profile:
+            return
+
+        location = status.get('location', '未知') if status else '未知'
+        attributes = status.get('attributes', {}) if status else {}
+        relations = load_player_relations(message.author.id)
+        player_relations_str = format_player_relations(relations)
+
+        scene_npcs_str = get_scene_npcs(location)
+        scene_npc_list = [n.strip() for n in scene_npcs_str.split('、') if n.strip() and n != '無']
+        fact_sheet = load_fact_sheet(message.author.id)
+
+        resolved_content = resolve_choice_input(message.content, status)
+        input_type, cleaned_action = classify_player_input(resolved_content)
+
+        affection_delta = detect_affection_change(message.content)
+        if affection_delta != 0 and scene_npc_list:
+            for npc_name in scene_npc_list:
+                update_npc_affection(message.author.id, npc_name, affection_delta)
+            relations = load_player_relations(message.author.id)
+            player_relations_str = format_player_relations(relations)
+
+        extreme_flags = detect_extreme_action(message.content)
+        emotion_override = ""
+        if (extreme_flags['is_insult'] or extreme_flags['is_violence']) and scene_npc_list:
+            updated_relations, triggered_npcs = update_npc_emotions(
+                message.author.id, scene_npc_list, extreme_flags
+            )
+            relations = updated_relations
+            player_relations_str = format_player_relations(relations)
+            emotion_override = build_emotion_override(triggered_npcs)
+
+        turn_context = build_model_context(
+            memory,
+            status=status,
+            relations=relations,
+            scene_npcs=scene_npc_list,
+            player_input=cleaned_action,
+            recent_turns=4,
+        )
+        summary_info["summary_used"] = bool(
+            turn_context.get("scene_summary")
+            and turn_context["scene_summary"] != "（尚無可用場景摘要）"
+        )
+        summary_info["recent_turns"] = turn_context.get("recent_turns_count", 0)
+
+        game_state = {
+            "profile": profile,
+            "status": status or {},
+            "location": location,
+            "attributes": attributes,
+            "scene_npcs": scene_npc_list,
+            "relations": relations or {"npcs": {}, "companions": {}},
+            "scene_state": turn_context.get("scene_state", {}),
+            "scene_summary": turn_context.get("scene_summary", ""),
+            "input_type": input_type
+        }
+        inventory = load_player_inventory(message.author.id) or {"items": []}
+        gamedata = _load_gamedata_bundle()
+        relations = ensure_hidden_state(relations, gamedata, game_state, cleaned_action)
+        save_player_data(message.author.id, "relations", relations)
+        game_state["relations"] = relations
+
+        turn_context = build_model_context(
+            memory,
+            status=status,
+            relations=relations,
+            scene_npcs=scene_npc_list,
+            player_input=cleaned_action,
+            recent_turns=4,
+        )
+
+        judge_system, judge_prompt = build_judge_prompt(
+            cleaned_action,
+            game_state,
+            memory,
+            relations,
+            inventory,
+            turn_context=turn_context,
+        )
+        input_tokens_est += estimate_tokens(judge_system) + estimate_tokens(judge_prompt)
+        call_start = now_ms()
+        judge_result = await call_judge_ai(judge_system, judge_prompt)
+        model_duration_ms += elapsed_ms(call_start)
+
+        authoritative_result = resolve_rules(
+            judge_result,
+            game_state,
+            memory,
+            relations,
+            inventory,
+            gamedata
+        )
+
+        turn_context = build_model_context(
+            memory,
+            status=status,
+            relations=relations,
+            scene_npcs=scene_npc_list,
+            player_input=cleaned_action,
+            authoritative_result=authoritative_result,
+            recent_turns=4,
+        )
+        game_state["scene_state"] = turn_context.get("scene_state", {})
+        event_size = classify_event_size(judge_result, authoritative_result)
+        length_policy = output_length_policy(event_size)
+        offer_choices = should_offer_choices(cleaned_action, judge_result, authoritative_result)
+
+        selected_npcs = select_relevant_npcs(location, cleaned_action, relations, limit=4)
+        selected_lore = {
+            "game_rules": "程式裁決優先；Story Writer 只敘事，不決定世界狀態；不得代寫玩家內心；不得暴露 hidden_state；每輪必須回應 authoritative_result。",
+            "fact_sheet": fact_sheet,
+            "player_relations": player_relations_str,
+            "emotion_override": emotion_override,
+            "scene_summary": turn_context.get("scene_summary", ""),
+        }
+        story_system, story_prompt = build_story_prompt(
+            cleaned_action,
+            judge_result,
+            authoritative_result,
+            selected_lore,
+            selected_npcs,
+            game_state,
+            memory,
+            turn_context=turn_context,
+            output_policy=length_policy,
+            offer_choices=offer_choices,
+        )
+
+        input_tokens_est += estimate_tokens(story_system) + estimate_tokens(story_prompt)
+        call_start = now_ms()
+        story_result = await call_story_ai(story_system, story_prompt)
+        model_duration_ms += elapsed_ms(call_start)
+
+        ok, last_error = validate_story_output_reason(
+            story_result,
+            authoritative_result,
+            game_state,
+            choices_required=offer_choices,
+        )
+        previous_reply = ""
+        if isinstance(memory.get("short_term"), list) and memory["short_term"]:
+            previous_reply = str(memory["short_term"][-1].get("bot", ""))
+        quality = inspect_story_quality(
+            story_result.get("reply", ""),
+            previous_reply=previous_reply,
+            max_chars=length_policy["max_chars"],
+            min_chars=length_policy.get("min_chars", 0),
+        )
+
+        if (not ok or quality["retry_recommended"]) and retry_count < 1:
+            retry_count += 1
+            retry_reason = last_error if not ok else "local_quality_check_failed"
+            retry_prompt = (
+                story_prompt
+                + f"\n\nPrevious output failed: {retry_reason}. "
+                + "Return corrected JSON only. Keep authoritative_result unchanged. "
+                + f"Reply MUST be at least {length_policy.get('min_chars', 220)} Chinese chars and within {length_policy['max_chars']} Chinese chars. "
+                + "No debug labels, no player inner thoughts, no repeated wording."
+            )
+            input_tokens_est += estimate_tokens(retry_prompt)
+            call_start = now_ms()
+            story_result = await call_story_ai(story_system, retry_prompt)
+            model_duration_ms += elapsed_ms(call_start)
+            ok, last_error = validate_story_output_reason(
+                story_result,
+                authoritative_result,
+                game_state,
+                choices_required=offer_choices,
+            )
+
+        if not ok:
+            story_result = fallback_story_result(authoritative_result)
+
+        story_result, _final_quality = finalize_story_result(
+            story_result,
+            previous_reply=previous_reply,
+            length_policy=length_policy,
+        )
+        hint = "" if offer_choices else natural_next_step_hint(story_result)
+        text = format_story_reply(story_result, show_choices=offer_choices, natural_hint=hint)
+        text = sanitize_player_visible_text(text)
+        await message.reply(text)
+
+        authoritative_result["state_update"].setdefault("status_set", {})["last_choices"] = (
+            compact_choices_for_status(story_result) if offer_choices else []
+        )
+        scene_state = normalize_scene_state(
+            turn_context.get("scene_state", {}),
+            status=status,
+            relations=relations,
+            scene_npcs=scene_npc_list,
+            player_input=cleaned_action,
+            authoritative_result=authoritative_result,
+        )
+        authoritative_result["state_update"].setdefault("status_set", {})["scene_state"] = scene_state
+        apply_state_update(message.author.id, authoritative_result["state_update"])
+
+        try:
+            update_companion_tracking(message.author.id, story_result.get("reply", ""))
+            latest_status = load_player_status(message.author.id)
+            latest_relations = load_player_relations(message.author.id)
+            summary_info = update_memory(
+                message.author.id,
+                message.content,
+                text,
+                status=latest_status,
+                relations=latest_relations,
+            )
+            memory = load_player_memory(message.author.id) or {}
+            memory["scene_state"] = scene_state
+            save_player_data(message.author.id, "memory", memory)
+        except Exception as post_error:
+            print(f"Post-reply maintenance error: {post_error}")
+
+        log_reply_performance({
+            "channel_id": message.channel.id,
+            "input_tokens_est": input_tokens_est,
+            "output_tokens_est": estimate_tokens(text),
+            "model_duration_ms": model_duration_ms,
+            "total_duration_ms": elapsed_ms(total_start),
+            "retry_count": retry_count,
+            "summary_used": summary_info.get("summary_used", False),
+            "summary_triggered": summary_info.get("summary_triggered", False),
+            "recent_turns": summary_info.get("recent_turns", turn_context.get("recent_turns_count", 0)),
+        })
+
+    except Exception as e:
+        print(f"Error: {e}")
+        await message.reply("⚠️ 宮中傳訊受阻，請稍後再試。")
 
 
 @bot.event

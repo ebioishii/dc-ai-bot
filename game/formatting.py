@@ -79,12 +79,14 @@ def _choice_lines(choices: list) -> str:
     return "\n".join(lines)
 
 
-def format_story_reply(story_result: dict) -> str:
+def format_story_reply(story_result: dict, show_choices: bool = True, natural_hint: str = "") -> str:
     reply = str(story_result.get("reply", "")).strip()
-    choices = story_result.get("choices", [])
+    choices = story_result.get("choices", []) if show_choices else []
     choice_text = _choice_lines(choices if isinstance(choices, list) else [])
-    if choice_text:
+    if show_choices and choice_text:
         return f"{reply}\n\n【可選行動】\n{choice_text}"
+    if natural_hint:
+        return f"{reply}\n\n{natural_hint.strip()}"
     return reply
 
 

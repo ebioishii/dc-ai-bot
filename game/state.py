@@ -2,13 +2,24 @@ from __future__ import annotations
 import os
 import json
 
+_GAMEDATA_CACHE: dict = {}
+
+
+def _cached_json(key: str, path: str, extract=None):
+    if key not in _GAMEDATA_CACHE:
+        with open(path, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+        _GAMEDATA_CACHE[key] = extract(data) if extract else data
+    return _GAMEDATA_CACHE[key]
+
+
 def default_hidden_state_for_npc(npc_name: str, npc: dict | None = None, relation: dict | None = None) -> dict:
     from game.npc import default_hidden_state_for_npc as _impl
     return _impl(npc_name, npc, relation)
 
 def get_script(category, key):
-    with open('gamedata/scripts.json', 'r', encoding='utf-8') as f:
-        return json.load(f)[category][key]
+    data = _cached_json("scripts", "gamedata/scripts.json")
+    return data[category][key]
 
 
 def get_player_folder(user_id):
@@ -54,43 +65,35 @@ def load_player_relations(user_id):
 
 
 def get_families():
-    with open('gamedata/families.json', 'r', encoding='utf-8') as f:
-        return json.load(f)['families']
+    return _cached_json("families", "gamedata/families.json", lambda d: d["families"])
 
 
 def get_ranks():
-    with open('gamedata/ranks.json', 'r', encoding='utf-8') as f:
-        return json.load(f)['ranks']
+    return _cached_json("ranks", "gamedata/ranks.json", lambda d: d["ranks"])
 
 
 def get_rules():
-    with open('gamedata/rules.json', 'r', encoding='utf-8') as f:
-        return json.load(f)
+    return _cached_json("rules", "gamedata/rules.json")
 
 
 def get_punishments():
-    with open('gamedata/punishments.json', 'r', encoding='utf-8') as f:
-        return json.load(f)['punishments']
+    return _cached_json("punishments", "gamedata/punishments.json", lambda d: d["punishments"])
 
 
 def get_rewards():
-    with open('gamedata/rewards.json', 'r', encoding='utf-8') as f:
-        return json.load(f)['rewards']
+    return _cached_json("rewards", "gamedata/rewards.json", lambda d: d["rewards"])
 
 
 def get_locations():
-    with open('gamedata/locations.json', 'r', encoding='utf-8') as f:
-        return json.load(f)['locations']
+    return _cached_json("locations", "gamedata/locations.json", lambda d: d["locations"])
 
 
 def get_npcs():
-    with open('gamedata/npcs.json', 'r', encoding='utf-8') as f:
-        return json.load(f)['npcs']
+    return _cached_json("npcs", "gamedata/npcs.json", lambda d: d["npcs"])
 
 
 def get_strategies():
-    with open('gamedata/strategies.json', 'r', encoding='utf-8') as f:
-        return json.load(f).get('strategies', [])
+    return _cached_json("strategies", "gamedata/strategies.json", lambda d: d.get("strategies", []))
 
 
 def _load_gamedata_bundle() -> dict:
@@ -171,7 +174,15 @@ def apply_state_update(user_id, update: dict):
     status = load_player_status(user_id) or {}
     inventory = load_player_inventory(user_id) or {"items": []}
     relations = load_player_relations(user_id) or {"npcs": {}, "companions": {}}
-    memory = load_player_memory(user_id) or {"long_term_summary": "", "short_term": [], "fact_sheet": "", "fact_sheet_items": []}
+    memory = load_player_memory(user_id) or {
+        "long_term_summary": "",
+        "short_term": [],
+        "fact_sheet": "",
+        "fact_sheet_items": [],
+        "scene_summary": "",
+        "scene_state": {},
+        "summary_turns_since_update": 0,
+    }
     try:
         from game.schemes import ensure_scheme_state
         relations = ensure_scheme_state(relations)

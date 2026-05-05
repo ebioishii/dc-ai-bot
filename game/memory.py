@@ -1,6 +1,7 @@
 from __future__ import annotations
 import re
 
+from game.context import compact_memory_window
 from game.state import load_player_memory, save_player_data
 
 def load_fact_sheet(user_id) -> str:
@@ -62,62 +63,41 @@ def extract_key_info(dialogue_pair: dict) -> str:
 
 
 def manage_memory(user_id):
-    """
-    滾動式記憶管理：
-    當短期記憶 >= 10 筆時，壓縮最舊的 2 筆為長期記憶條目。
-    長期記憶以帶編號列表儲存（最多 15 條）。
-    """
+    """相容舊呼叫：改用 scene_summary 壓縮，不再累積完整歷史原文。"""
     memory = load_player_memory(user_id)
     if not memory:
         return
 
-    short_term = memory.get('short_term', [])
-    long_term = memory.get('long_term_summary', '')
-
-    if len(short_term) < 10:
+    short_term = memory.get("short_term", [])
+    if len(short_term) < 7:
         return
 
-    old_dialogues = short_term[:2]
-    memory['short_term'] = short_term[2:]
-
-    new_items = [extract_key_info(d) for d in old_dialogues]
-
-    # 相容舊版 pipe-separated 格式與新版帶編號格式
-    if ' | ' in long_term and not long_term.strip().startswith('1.'):
-        existing_items = [i.strip() for i in long_term.split(' | ') if i.strip()]
-    else:
-        existing_items = [
-            re.sub(r'^\d+\.\s*', '', line).strip()
-            for line in long_term.splitlines()
-            if line.strip()
-        ]
-    existing_items.extend(new_items)
-
-    if len(existing_items) > 15:
-        existing_items = existing_items[-15:]
-
-    memory['long_term_summary'] = "\n".join(
-        f"{i + 1}. {item}" for i, item in enumerate(existing_items)
-    )
-    save_player_data(user_id, 'memory', memory)
-    print(f"✅ 記憶滾動：已壓縮 2 筆舊對話至長期記憶")
+    memory, summarized = compact_memory_window(memory)
+    save_player_data(user_id, "memory", memory)
+    if summarized:
+        print("✅ 記憶滾動：已壓縮舊對話至 scene_summary")
 
 
-def update_memory(user_id, player_input, reply):
+def update_memory(user_id, player_input, reply, status=None, relations=None) -> dict:
     memory = load_player_memory(user_id) or {
         "long_term_summary": "",
         "short_term": [],
         "fact_sheet": "",
-        "fact_sheet_items": []
+        "fact_sheet_items": [],
+        "scene_summary": "",
+        "scene_state": {},
+        "summary_turns_since_update": 0
     }
     short_term = memory.get("short_term", [])
     short_term.append({"user": player_input, "bot": reply})
     memory["short_term"] = short_term
+    memory["summary_turns_since_update"] = int(memory.get("summary_turns_since_update", 0) or 0) + 1
+    memory, summarized = compact_memory_window(memory, status=status, relations=relations)
     save_player_data(user_id, "memory", memory)
-    manage_memory(user_id)
-    memory = load_player_memory(user_id)
-    if memory and len(memory.get("short_term", [])) > 10:
-        memory["short_term"] = memory["short_term"][-10:]
-        save_player_data(user_id, "memory", memory)
+    return {
+        "summary_triggered": summarized,
+        "recent_turns": len(memory.get("short_term", [])),
+        "summary_used": bool(memory.get("scene_summary")),
+    }
 
 

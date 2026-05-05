@@ -96,7 +96,7 @@ async def call_story_ai(system, user):
         user,
         model=GM_MODEL,
         temperature=0.75,
-        max_tokens=1800
+        max_tokens=1200
     )
     if not isinstance(data, dict):
         return {}
@@ -110,7 +110,20 @@ async def call_story_ai(system, user):
     }
 
 
-def build_story_prompt(player_input, judge_result, authoritative_result, selected_lore, selected_npcs, game_state, memory):
+def build_story_prompt(
+    player_input,
+    judge_result,
+    authoritative_result,
+    selected_lore,
+    selected_npcs,
+    game_state,
+    memory,
+    turn_context: dict | None = None,
+    output_policy: dict | None = None,
+    offer_choices: bool = True,
+):
+    turn_context = turn_context or {}
+    output_policy = output_policy or {"event_size": "normal", "min_chars": 120, "max_chars": 250}
     selected_names = [npc.get("name") for npc in selected_npcs if isinstance(npc, dict) and npc.get("name")]
     selected_names.extend(authoritative_result.get("relevant_npcs", []) if isinstance(authoritative_result, dict) else [])
     sanitized_state = dict(game_state or {})
@@ -126,33 +139,24 @@ def build_story_prompt(player_input, judge_result, authoritative_result, selecte
     compact_npcs = [_compact_npc(npc) for npc in selected_npcs if isinstance(npc, dict)]
     story_system = (
         "You are AI 2: Story Writer AI for a Discord text game. "
-        "Only write player-facing narration and choices from the authoritative ruling. "
+        "Only write player-facing narration from the authoritative ruling. "
         "You are not the judge. Do not change state, overrule rulings, or treat player assumptions as facts. "
         "Do not reveal hidden_state numbers or full hidden_state objects. Express them only through indirect cues. "
         "Output JSON only."
     )
     story_user = {
-        "task": "Write the next player-facing story beat and 2-4 strategically different choices.",
+        "task": "Write the next player-facing story beat. Include choices only when choices_required is true.",
         "output_schema": {
             "reply": "給玩家看的劇情文字",
-            "choices": [
-                {
-                    "id": "choice_1",
-                    "text": "玩家看到的行動描述",
-                    "style": "humble | probe | observe | flatter | confront | retreat | wait | use_item | other",
-                    "risk": "low | medium | high",
-                    "effect_hint": "玩家可理解的策略效果提示",
-                    "mechanical_effect": {
-                        "target": "NPC 名稱或狀態名稱",
-                        "relation_delta": 0,
-                        "suspicion_delta": 0,
-                        "anger_delta": 0,
-                        "info_gain": 0,
-                        "reputation_delta": 0
-                    }
-                }
-            ],
+            "choices": "[] unless choices_required is true; then provide 2-4 strategic choices with id/text/style/risk/effect_hint/mechanical_effect.",
             "state_update": {}
+        },
+        "output_policy": {
+            "event_size": output_policy.get("event_size", "normal"),
+            "reply_length_chinese_chars": f"{output_policy.get('min_chars', 120)}-{output_policy.get('max_chars', 250)}",
+            "choices_required": bool(offer_choices),
+            "choice_display_rule": "Do not include a 【可選行動】 heading in reply. Put choices only in JSON choices when choices_required is true.",
+            "when_no_choices": "End with immersive momentum or a subtle natural opening, not a numbered option list."
         },
         "hard_rules": [
             "You only write story; you do not decide rules.",
@@ -166,12 +170,14 @@ def build_story_prompt(player_input, judge_result, authoritative_result, selecte
             "Use hidden_state_cues only as indirect body language, pauses, tone, glances, or servant reactions.",
             "You must include all provided npc_actions and world_event if world_event.type is not none.",
             "If world_event.type is none, do not invent interruptions, arrivals, summons, object discoveries, or overheard events.",
-            "Provide 2-4 choices every turn.",
-            "Choices must be concrete and actionable, not just emotions or tone swaps.",
-            "Choices must have real mechanical differences. Include at least one low risk choice and at least one higher-reward but risky choice.",
-            "Discord display will show only text and effect_hint, but JSON must include the full choice schema.",
-            "state_update is only a suggestion and may be ignored by code."
+            "Do not write the player's private thoughts, fear, intent, or unspoken emotions. Only describe visible posture or consequences.",
+            "If choices_required is false, choices must be [].",
+            "If choices_required is true, choices must be concrete, actionable, and mechanically different.",
+            "state_update is only a suggestion and may be ignored by code.",
+            "Only mention NPCs by name if they appear in selected_npcs or are explicitly named in authoritative_result.npc_actions. Never invent, import, or introduce NPC names not present in those sources.",
+            "permitted_npc_names lists every NPC you may name. Referring to any other person by name is forbidden."
         ],
+        "permitted_npc_names": selected_names,
         "player_input": player_input,
         "judge_result": judge_result,
         "authoritative_result": compact_authoritative,
@@ -183,11 +189,10 @@ def build_story_prompt(player_input, judge_result, authoritative_result, selecte
         "selected_lore": selected_lore,
         "selected_npcs": compact_npcs,
         "current_state": sanitized_state,
-        "memory_summary": {
-            "long_term_summary": (memory or {}).get("long_term_summary", ""),
-            "recent_turns": (memory or {}).get("short_term", [])[-3:],
-            "fact_sheet": (memory or {}).get("fact_sheet", "")
-        }
+        "scene_state": turn_context.get("scene_state", {}),
+        "scene_summary": turn_context.get("scene_summary", (memory or {}).get("scene_summary", "")),
+        "recent_turns": turn_context.get("recent_turns", []),
+        "fact_sheet": turn_context.get("fact_sheet", (memory or {}).get("fact_sheet", ""))
     }
     return story_system, _json_prompt_payload(story_user)
 

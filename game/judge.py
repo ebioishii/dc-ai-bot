@@ -62,7 +62,8 @@ def _json_prompt_payload(data: dict) -> str:
     return json.dumps(data, ensure_ascii=False, indent=2, default=str)
 
 
-def build_judge_prompt(player_input, game_state, memory, relations, inventory):
+def build_judge_prompt(player_input, game_state, memory, relations, inventory, turn_context: dict | None = None):
+    turn_context = turn_context or {}
     judge_system = (
         "You are AI 1: Intent / Judge AI for a Discord text game. "
         "Only understand player input, identify intent, risks, mentions, and assumptions. "
@@ -94,11 +95,10 @@ def build_judge_prompt(player_input, game_state, memory, relations, inventory):
         ],
         "player_input": player_input,
         "current_state": game_state,
-        "memory_summary": {
-            "long_term_summary": (memory or {}).get("long_term_summary", ""),
-            "recent_turns": (memory or {}).get("short_term", [])[-3:],
-            "fact_sheet": (memory or {}).get("fact_sheet", "")
-        },
+        "scene_state": turn_context.get("scene_state", {}),
+        "scene_summary": turn_context.get("scene_summary", (memory or {}).get("scene_summary", "")),
+        "recent_turns": turn_context.get("recent_turns", []),
+        "fact_sheet": turn_context.get("fact_sheet", (memory or {}).get("fact_sheet", "")),
         "known_relations": relations or {},
         "inventory": inventory or {"items": []}
     }
