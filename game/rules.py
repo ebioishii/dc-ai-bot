@@ -7,6 +7,11 @@ from game.npc import (
     plan_npc_actions,
 )
 from game.events import plan_world_event
+from game.mechanics import evaluate_player_action_costs, update_social_graph_from_turn
+from game.schemes import (
+    advance_schemes, ensure_scheme_state, expose_scheme_clues, maybe_create_scheme,
+    resolve_scheme_by_player_action, scheme_pressure,
+)
 
 def classify_player_input(text: str) -> tuple[str, str]:
     """
@@ -59,12 +64,16 @@ def resolve_rules(judge_result, game_state, memory, relations, inventory, gameda
         "relevant_npcs": [],
         "constraints": [],
         "npc_actions": [],
+        "scheme_events": [],
+        "visible_clues": [],
+        "scheme_pressure": [],
         "world_event": {"type": "none", "description": "", "state_update": {}}
     }
     if not isinstance(judge_result, dict):
         judge_result = judge_fallback()
 
     relations = ensure_hidden_state(relations, gamedata, game_state, str(judge_result.get("player_intent") or judge_result.get("intent") or ""))
+    relations = ensure_scheme_state(relations)
     mentioned_npcs = [str(x) for x in judge_result.get("mentioned_npcs", []) if str(x).strip()]
     mentioned_items = [str(x) for x in judge_result.get("mentioned_items", []) if str(x).strip()]
     assumptions = [str(x) for x in judge_result.get("assumptions", []) if str(x).strip()]
@@ -110,6 +119,15 @@ def resolve_rules(judge_result, game_state, memory, relations, inventory, gameda
         result["allowed"] = False
         result["denied_assumptions"].extend([f"player has item: {item}" for item in missing_items])
         result["constraints"].append(f"missing_items: player does not have {', '.join(missing_items)}.")
+
+    mechanics = evaluate_player_action_costs(judge_result, game_state if isinstance(game_state, dict) else {}, relations, gamedata)
+    merge_state_update(result["state_update"], mechanics.get("state_update", {}))
+    result["confirmed_events"].extend(mechanics.get("events", []))
+    result["constraints"].extend(mechanics.get("constraints", []))
+    if mechanics.get("allowed") is False:
+        result["allowed"] = False
+        if mechanics.get("reason"):
+            result["reason"] = mechanics["reason"]
 
     if assumptions:
         result["denied_assumptions"].extend(assumptions)
@@ -159,6 +177,18 @@ def resolve_rules(judge_result, game_state, memory, relations, inventory, gameda
             result["denied_assumptions"].append("皇上已經經過或到場")
             result["constraints"].append("emperor_passage: whether the emperor passed by must be decided by rules, not player wording.")
 
+    scheme_notes = []
+    scheme_notes.extend(resolve_scheme_by_player_action(judge_result, game_state if isinstance(game_state, dict) else {}, relations, gamedata))
+    scheme_notes.extend(maybe_create_scheme(judge_result, game_state if isinstance(game_state, dict) else {}, relations, gamedata))
+    scheme_notes.extend(advance_schemes(judge_result, game_state if isinstance(game_state, dict) else {}, relations, gamedata))
+    visible_clues = expose_scheme_clues(judge_result, game_state if isinstance(game_state, dict) else {}, relations, gamedata)
+    if scheme_notes or visible_clues:
+        result["scheme_events"] = scheme_notes
+        result["visible_clues"] = visible_clues
+        result["constraints"].append(
+            "schemes: narrate only the provided visible clues and pressure; do not name hidden schemes or change their owner, target, or goal."
+        )
+
     result["npc_actions"] = plan_npc_actions(judge_result, game_state if isinstance(game_state, dict) else {}, relations, gamedata)
     for npc_action in result["npc_actions"]:
         effect = npc_action.get("mechanical_effect", {}) if isinstance(npc_action, dict) else {}
@@ -181,6 +211,10 @@ def resolve_rules(judge_result, game_state, memory, relations, inventory, gameda
     if result["world_event"].get("type") != "none":
         result["constraints"].append("world_event: story may describe only this provided world_event, not invent another major event.")
 
+    result["scheme_pressure"] = scheme_pressure(relations)
+    update_social_graph_from_turn(relations, judge_result, game_state if isinstance(game_state, dict) else {}, gamedata)
+    result["state_update"]["schemes"] = relations.get("schemes", [])
+    result["state_update"]["social_graph"] = relations.get("social_graph", {})
     result["state_update"]["turn_count_delta"] = result["state_update"].get("turn_count_delta", 0) + 1
 
     if not result["allowed"] and not result["reason"]:

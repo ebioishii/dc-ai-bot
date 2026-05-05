@@ -1,7 +1,7 @@
 from __future__ import annotations
 from services.gemini_client import GM_MODEL, call_gemini_json
 from game.state import get_script, get_strategies
-from game.npc import hidden_state_cues, format_selected_npc_data
+from game.npc import get_npc_stats, hidden_state_cues, format_selected_npc_data
 from game.judge import _json_prompt_payload
 
 def make_gm_system_instruction(game_rules: str) -> str:
@@ -122,6 +122,8 @@ def build_story_prompt(player_input, judge_result, authoritative_result, selecte
         (game_state or {}).get("relations", {}),
         list(dict.fromkeys([name for name in selected_names if name]))
     )
+    compact_authoritative = _compact_authoritative_result(authoritative_result)
+    compact_npcs = [_compact_npc(npc) for npc in selected_npcs if isinstance(npc, dict)]
     story_system = (
         "You are AI 2: Story Writer AI for a Discord text game. "
         "Only write player-facing narration and choices from the authoritative ruling. "
@@ -155,6 +157,8 @@ def build_story_prompt(player_input, judge_result, authoritative_result, selecte
         "hard_rules": [
             "You only write story; you do not decide rules.",
             "Do not overrule authoritative_result.",
+            "Do not create, cancel, rename, or redirect NPC schemes. Only reflect scheme_pressure, visible_clues, and scheme_events provided by authoritative_result.",
+            "Never reveal scheme ids, hidden goals, numeric progress, numeric risk, or JSON field names in player-facing prose.",
             "Do not add major events that are absent from authoritative_result.confirmed_events, npc_actions, world_event, or state_update.",
             "Do not turn judge_result.assumptions into happened facts.",
             "If authoritative_result.denied_assumptions includes an event, the reply must say it did not happen or remains unconfirmed.",
@@ -170,9 +174,14 @@ def build_story_prompt(player_input, judge_result, authoritative_result, selecte
         ],
         "player_input": player_input,
         "judge_result": judge_result,
-        "authoritative_result": authoritative_result,
+        "authoritative_result": compact_authoritative,
+        "scheme_context": {
+            "visible_clues": authoritative_result.get("visible_clues", []) if isinstance(authoritative_result, dict) else [],
+            "scheme_events": authoritative_result.get("scheme_events", []) if isinstance(authoritative_result, dict) else [],
+            "scheme_pressure": authoritative_result.get("scheme_pressure", []) if isinstance(authoritative_result, dict) else []
+        },
         "selected_lore": selected_lore,
-        "selected_npcs": selected_npcs,
+        "selected_npcs": compact_npcs,
         "current_state": sanitized_state,
         "memory_summary": {
             "long_term_summary": (memory or {}).get("long_term_summary", ""),
@@ -181,6 +190,40 @@ def build_story_prompt(player_input, judge_result, authoritative_result, selecte
         }
     }
     return story_system, _json_prompt_payload(story_user)
+
+
+def _compact_authoritative_result(authoritative_result: dict | None) -> dict:
+    if not isinstance(authoritative_result, dict):
+        return {}
+    update = authoritative_result.get("state_update", {}) if isinstance(authoritative_result.get("state_update"), dict) else {}
+    compact_update = {
+        key: value for key, value in update.items()
+        if key not in {"schemes", "social_graph"} and value not in ({}, [], None, 0)
+    }
+    return {
+        "allowed": authoritative_result.get("allowed", True),
+        "reason": authoritative_result.get("reason", ""),
+        "confirmed_events": authoritative_result.get("confirmed_events", []),
+        "denied_assumptions": authoritative_result.get("denied_assumptions", []),
+        "constraints": authoritative_result.get("constraints", []),
+        "npc_actions": authoritative_result.get("npc_actions", []),
+        "world_event": authoritative_result.get("world_event", {"type": "none", "description": ""}),
+        "state_update": compact_update,
+    }
+
+
+def _compact_npc(npc: dict) -> dict:
+    hidden = npc.get("hidden", {}) if isinstance(npc.get("hidden"), dict) else {}
+    return {
+        "name": npc.get("name", ""),
+        "title": npc.get("title", ""),
+        "rank": npc.get("rank", ""),
+        "location": npc.get("location", ""),
+        "description": str(npc.get("description", ""))[:120],
+        "personality": str(npc.get("personality", ""))[:120],
+        "base_stats": get_npc_stats(npc),
+        "hidden_agenda": str(hidden.get("hidden_agenda", ""))[:120],
+    }
 
 
 def fallback_story_result(authoritative_result: dict) -> dict:

@@ -8,26 +8,44 @@ FEAR_THRESHOLD = 70
 INSULT_KEYWORDS = ['??', '?', '??', '?', '??', '?', '?', '?', '?']
 AFFECTION_POSITIVE_KEYWORDS = ['??', '??', '??', '??', '??', '??', '??', '??', '??', '??']
 AFFECTION_NEGATIVE_KEYWORDS = ['??', '??', '??', '??', '??', '??', '??', '??', '??']
-COMPANION_ROLES = ['??', '??', '??', '??', '??', '??', '??', '??']
+COMPANION_ROLES = ['宮女', '太監', '嬤嬤', '姑姑', '侍女', '隨侍', '小太監', '丫鬟']
 HIGH_RANK_NPC_LEVEL = 7
+
+def get_npc_stats(npc: dict | None) -> dict:
+    """Return the canonical NPC stat block, accepting older `stats` data too."""
+    if not isinstance(npc, dict):
+        return {}
+    stats = npc.get("base_stats")
+    if isinstance(stats, dict):
+        return stats
+    stats = npc.get("stats")
+    return stats if isinstance(stats, dict) else {}
+
+
+def _format_npc_prompt_block(npc: dict) -> str:
+    npc_info = f"【{npc['name']}】{npc.get('title', '')}\n"
+    npc_info += f"  位置：{npc.get('location', '未知')}\n"
+    npc_info += f"  位階：{npc.get('rank', '未知')}\n"
+    desc = str(npc.get("description", "")).strip()
+    if desc:
+        npc_info += f"  描述：{desc[:120]}\n"
+    npc_info += f"  性格：{npc.get('personality', '無')}\n"
+    stats = get_npc_stats(npc)
+    if stats:
+        stats_str = "、".join(f"{k}:{v}" for k, v in stats.items())
+        npc_info += f"  能力值：{stats_str}\n"
+    hidden = npc.get('hidden', {})
+    if hidden.get('hidden_agenda'):
+        agenda = hidden['hidden_agenda'][:100]
+        npc_info += f"  潛在意圖：{agenda}...\n"
+    return npc_info + "\n"
 
 def format_npc_data():
     """將 NPC 資料格式化為 AI 可讀的提示"""
     npcs = get_npcs()
     npc_info = ""
     for npc in npcs:
-        npc_info += f"【{npc['name']}】{npc.get('title', '')}\n"
-        npc_info += f"  位置：{npc.get('location', '未知')}\n"
-        npc_info += f"  性格：{npc.get('personality', '無')}\n"
-        stats = npc.get('stats', {})
-        if stats:
-            stats_str = "、".join(f"{k}:{v}" for k, v in stats.items())
-            npc_info += f"  能力值：{stats_str}\n"
-        hidden = npc.get('hidden', {})
-        if hidden.get('hidden_agenda'):
-            agenda = hidden['hidden_agenda'][:80]
-            npc_info += f"  潛在意圖：{agenda}...\n"
-        npc_info += "\n"
+        npc_info += _format_npc_prompt_block(npc)
     return npc_info
 
 
@@ -69,18 +87,7 @@ def format_selected_npc_data(npcs: list) -> str:
         return "（本輪無直接相關 NPC。若需 NPC 介入，必須符合地點、位階與劇情因果。）"
     npc_info = ""
     for npc in npcs:
-        npc_info += f"【{npc['name']}】{npc.get('title', '')}\n"
-        npc_info += f"  位置：{npc.get('location', '未知')}\n"
-        npc_info += f"  性格：{npc.get('personality', '無')}\n"
-        stats = npc.get('stats', {})
-        if stats:
-            stats_str = "、".join(f"{k}:{v}" for k, v in stats.items())
-            npc_info += f"  能力值：{stats_str}\n"
-        hidden = npc.get('hidden', {})
-        if hidden.get('hidden_agenda'):
-            agenda = hidden['hidden_agenda'][:80]
-            npc_info += f"  潛在意圖：{agenda}...\n"
-        npc_info += "\n"
+        npc_info += _format_npc_prompt_block(npc)
     return npc_info
 
 
@@ -186,7 +193,10 @@ def update_npc_affection(user_id, npc_name: str, delta: int):
 
 def extract_companion_candidates(text: str) -> list:
     """從文字中抓取潛在隨侍名稱（1~3 字名 + 身份詞）"""
-    pattern = r'([一-龥]{1,3})(?:' + '|'.join(COMPANION_ROLES) + ')'
+    roles = [re.escape(role) for role in COMPANION_ROLES if role]
+    if not roles:
+        return []
+    pattern = r'([一-龥]{1,3})(?:' + '|'.join(roles) + ')'
     return re.findall(pattern, text)
 
 

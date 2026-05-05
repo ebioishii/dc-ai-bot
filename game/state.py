@@ -98,7 +98,8 @@ def _load_gamedata_bundle() -> dict:
         "npcs": get_npcs(),
         "ranks": get_ranks(),
         "rules": get_rules(),
-        "locations": get_locations()
+        "locations": get_locations(),
+        "strategies": get_strategies()
     }
 
 
@@ -154,6 +155,15 @@ def clamp_int(value, low: int, high: int, default: int = 0) -> int:
         return default
 
 
+def clamp_attribute(attr: str, value, current: int = 0) -> int:
+    try:
+        from game.mechanics import attribute_bounds
+        low, high = attribute_bounds(attr, current)
+    except Exception:
+        low, high = (0, 100)
+    return clamp_int(value, low, high, current)
+
+
 def apply_state_update(user_id, update: dict):
     """把模型輸出的 state_update 寫回玩家 JSON 檔。"""
     if not isinstance(update, dict):
@@ -162,6 +172,11 @@ def apply_state_update(user_id, update: dict):
     inventory = load_player_inventory(user_id) or {"items": []}
     relations = load_player_relations(user_id) or {"npcs": {}, "companions": {}}
     memory = load_player_memory(user_id) or {"long_term_summary": "", "short_term": [], "fact_sheet": "", "fact_sheet_items": []}
+    try:
+        from game.schemes import ensure_scheme_state
+        relations = ensure_scheme_state(relations)
+    except Exception:
+        relations.setdefault("schemes", [])
 
     if update.get("location"):
         status["location"] = str(update["location"])
@@ -179,12 +194,14 @@ def apply_state_update(user_id, update: dict):
     attrs = status.setdefault("attributes", {})
     for attr, delta in (update.get("attributes_delta") or {}).items():
         try:
-            attrs[attr] = clamp_int(attrs.get(attr, 0) + int(delta), 0, 100, attrs.get(attr, 0))
+            current = attrs.get(attr, 0)
+            attrs[attr] = clamp_attribute(attr, current + int(delta), current)
         except Exception:
             pass
     if update.get("reputation_delta"):
         try:
-            attrs["聲望"] = clamp_int(attrs.get("聲望", 0) + int(update.get("reputation_delta", 0)), -100, 100, attrs.get("聲望", 0))
+            current = attrs.get("聲望", 0)
+            attrs["聲望"] = clamp_attribute("聲望", current + int(update.get("reputation_delta", 0)), current)
         except Exception:
             pass
 
@@ -260,6 +277,16 @@ def apply_state_update(user_id, update: dict):
                 pass
         if "test_intent" in delta_data:
             npc_hidden["test_intent"] = bool(delta_data["test_intent"])
+
+    if isinstance(update.get("schemes"), list):
+        relations["schemes"] = update["schemes"]
+        try:
+            from game.schemes import ensure_scheme_state
+            relations = ensure_scheme_state(relations)
+        except Exception:
+            pass
+    if isinstance(update.get("social_graph"), dict):
+        relations["social_graph"] = update["social_graph"]
 
     facts = update.get("facts_add") or []
     if facts:

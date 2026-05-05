@@ -208,6 +208,42 @@ class HaremBot(commands.Bot):
 bot = HaremBot()
 
 
+def resolve_choice_input(raw_text: str, status: dict | None) -> str:
+    text = raw_text.strip()
+    if text not in {"1", "2", "3", "4"}:
+        return raw_text
+    choices = (status or {}).get("last_choices", [])
+    if not isinstance(choices, list):
+        return raw_text
+    index = int(text) - 1
+    if index < 0 or index >= len(choices):
+        return raw_text
+    choice = choices[index]
+    if not isinstance(choice, dict):
+        return raw_text
+    choice_text = str(choice.get("text", "")).strip()
+    effect_hint = str(choice.get("effect_hint", "")).strip()
+    if not choice_text:
+        return raw_text
+    return f"{choice_text}（玩家選擇上一輪第 {text} 項。效果提示：{effect_hint}）"
+
+
+def compact_choices_for_status(story_result: dict) -> list[dict]:
+    compact = []
+    choices = story_result.get("choices", []) if isinstance(story_result, dict) else []
+    for choice in choices[:4] if isinstance(choices, list) else []:
+        if not isinstance(choice, dict):
+            continue
+        compact.append({
+            "id": str(choice.get("id", ""))[:40],
+            "text": str(choice.get("text", ""))[:160],
+            "style": str(choice.get("style", ""))[:30],
+            "risk": str(choice.get("risk", ""))[:20],
+            "effect_hint": str(choice.get("effect_hint", ""))[:160],
+        })
+    return compact
+
+
 # ============================================================
 # 指令
 # ============================================================
@@ -446,7 +482,8 @@ async def on_message(message):
                 fact_sheet = load_fact_sheet(message.author.id)
 
                 # ── 修正1：辨識指令類型 ──
-                input_type, cleaned_action = classify_player_input(message.content)
+                resolved_content = resolve_choice_input(message.content, status)
+                input_type, cleaned_action = classify_player_input(resolved_content)
 
                 # ── 好感度自動偵測（雙軌制 — 關鍵字軌）──
                 affection_delta = detect_affection_change(message.content)
@@ -501,7 +538,7 @@ async def on_message(message):
                     gamedata
                 )
 
-                selected_npcs = select_relevant_npcs(location, cleaned_action, relations)
+                selected_npcs = select_relevant_npcs(location, cleaned_action, relations, limit=5)
                 selected_lore = {
                     "game_rules": game_rules,
                     "fact_sheet": fact_sheet,
@@ -537,12 +574,15 @@ async def on_message(message):
                 text = format_story_reply(story_result)
                 await message.reply(text)
 
+                authoritative_result["state_update"].setdefault("status_set", {})["last_choices"] = compact_choices_for_status(story_result)
                 apply_state_update(message.author.id, authoritative_result["state_update"])
 
-                # 追蹤 AI 回應中出現的隨侍人物
-                update_companion_tracking(message.author.id, story_result.get("reply", ""))
-
-                update_memory(message.author.id, message.content, text)
+                try:
+                    # 追蹤 AI 回應中出現的隨侍人物
+                    update_companion_tracking(message.author.id, story_result.get("reply", ""))
+                    update_memory(message.author.id, message.content, text)
+                except Exception as post_error:
+                    print(f"Post-reply maintenance error: {post_error}")
 
             except Exception as e:
                 print(f"Error: {e}")
