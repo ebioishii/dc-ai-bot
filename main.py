@@ -9,7 +9,7 @@ from game.state import (
     get_script, get_player_folder, save_player_data, load_player_data, player_exists,
     load_player_profile, load_player_status, load_player_memory,
     load_player_inventory, load_player_relations, get_families,
-    _load_gamedata_bundle, apply_state_update,
+    get_locations, _load_gamedata_bundle, apply_state_update,
 )
 from game.memory import load_fact_sheet, update_fact_sheet, build_history_summary, update_memory
 from game.npc import (
@@ -23,38 +23,52 @@ from game.rules import classify_player_input, resolve_rules
 from game.judge import build_judge_prompt, call_judge_ai
 from game.story import make_gm_system_instruction, build_story_prompt, call_story_ai, fallback_story_result
 from game.validation import validate_story_output_reason
+from game.startup import (
+    RANDOM_FAMILY_VALUE, build_opening_story_result, format_location_display,
+    generate_random_appearance, resolve_start_family, resolve_start_location,
+)
 
 load_dotenv()
 DISCORD_TOKEN = os.getenv('DISCORD_TOKEN')
 
 class StartModal(discord.ui.Modal):
-    def __init__(self, gender, family):
-        super().__init__(title=f"🏮 建立身分：{gender}性 🏮")
+    def __init__(self, gender, family, random_appearance=False):
+        title = f"🏮 建立身分：{gender}性"
+        if random_appearance:
+            title += "・隨機外貌"
+        super().__init__(title=f"{title} 🏮")
         self.gender = gender
         self.family = family
-
-    p_name = discord.ui.TextInput(
-        label='名諱',
-        placeholder='請輸入你在宮中的稱呼...',
-        min_length=2,
-        max_length=10
-    )
-
-    p_appearance = discord.ui.TextInput(
-        label='外貌描述',
-        placeholder='請簡單描述你的外貌特徵...',
-        min_length=5,
-        max_length=50,
-        style=discord.TextStyle.paragraph
-    )
+        self.random_appearance = random_appearance
+        self.p_name = discord.ui.TextInput(
+            label='名諱',
+            placeholder='請輸入你在宮中的稱呼...',
+            min_length=2,
+            max_length=10
+        )
+        self.add_item(self.p_name)
+        self.p_appearance = None
+        if not random_appearance:
+            self.p_appearance = discord.ui.TextInput(
+                label='外貌描述',
+                placeholder='請簡單描述你的外貌特徵...',
+                min_length=5,
+                max_length=50,
+                style=discord.TextStyle.paragraph
+            )
+            self.add_item(self.p_appearance)
 
     async def on_submit(self, interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=True)
         name = self.p_name.value
-        appearance = self.p_appearance.value
+        if self.random_appearance:
+            appearance = generate_random_appearance(self.gender, self.family)
+        else:
+            appearance = self.p_appearance.value if self.p_appearance else ""
 
         bonus = self.family.get("starting_bonus", {})
         user_id = interaction.user.id
+        start_location = resolve_start_location(self.family, get_locations())
 
         get_player_folder(user_id)
 
@@ -70,11 +84,21 @@ class StartModal(discord.ui.Modal):
         }
         save_player_data(user_id, 'profile', profile)
 
+        opening_story = build_opening_story_result(
+            profile,
+            self.family,
+            start_location,
+            self.family.get("opening_contacts", {})
+        )
+
         # 2. status.json
         status = {
             "alive": True,
-            "location": "偏殿",
-            "location_id": "",
+            "location": start_location["id"],
+            "location_id": start_location["id"],
+            "location_name": start_location["name"],
+            "room": start_location.get("room", ""),
+            "last_choices": compact_choices_for_status(opening_story),
             "attributes": {
                 "體力": bonus.get("體力", 100),
                 "權謀": bonus.get("權謀", 10),
@@ -114,6 +138,7 @@ class StartModal(discord.ui.Modal):
         embed = discord.Embed(title=f"【 {name} 】之入宮檔案", color=0x800000)
         embed.add_field(name="家世", value=self.family["name"], inline=True)
         embed.add_field(name="位階", value=self.family["rank"], inline=True)
+        embed.add_field(name="位置", value=format_location_display(status), inline=True)
         embed.add_field(name="外貌", value=appearance, inline=False)
         embed.add_field(name="優勢", value="、".join(
             self.family["advantages"]), inline=False)
@@ -131,7 +156,7 @@ class StartModal(discord.ui.Modal):
 
         await interaction.channel.send(f"**身分背景**\n\n{char_desc}")
 
-        opening = self.family.get("opening", "")
+        opening = format_story_reply(opening_story)
         await interaction.channel.send(content=opening)
 
         # 將開場存入短期記憶（user 欄使用自然語句，避免 Gemini 困惑）
@@ -149,7 +174,11 @@ class FamilySelect(discord.ui.Select):
     def __init__(self, families, gender):
         self.families = families
         self.gender = gender
-        options = [
+        options = [discord.SelectOption(
+            label="🎲 隨機出身",
+            description="從目前可選出身中隨機指定一個",
+            value=RANDOM_FAMILY_VALUE
+        )] + [
             discord.SelectOption(
                 label=f["label"],
                 description=f["description"][:50],
@@ -160,8 +189,28 @@ class FamilySelect(discord.ui.Select):
 
     async def callback(self, interaction: discord.Interaction):
         family_id = self.values[0]
-        family = next(f for f in self.families if f["id"] == family_id)
-        await interaction.response.send_modal(StartModal(self.gender, family))
+        family = resolve_start_family(self.families, family_id)
+        view = AppearanceSelectView(self.gender, family)
+        await interaction.response.send_message(
+            f"已選定出身：{family['name']}。請選擇外貌設定方式：",
+            view=view,
+            ephemeral=True
+        )
+
+
+class AppearanceSelectView(discord.ui.View):
+    def __init__(self, gender, family):
+        super().__init__()
+        self.gender = gender
+        self.family = family
+
+    @discord.ui.button(label="手動設定外貌", style=discord.ButtonStyle.secondary)
+    async def manual_appearance(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_modal(StartModal(self.gender, self.family, random_appearance=False))
+
+    @discord.ui.button(label="🎲 隨機外貌", style=discord.ButtonStyle.primary)
+    async def random_appearance(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_modal(StartModal(self.gender, self.family, random_appearance=True))
 
 
 class GenderSelect(discord.ui.Select):
@@ -292,8 +341,7 @@ async def profile(interaction: discord.Interaction):
         attr_text = "\n".join(
             [f"{k}: {v}" for k, v in status.get('attributes', {}).items()])
         embed.add_field(name="數值", value=attr_text, inline=True)
-        embed.add_field(name="位置", value=status.get(
-            'location', '未知'), inline=True)
+        embed.add_field(name="位置", value=format_location_display(status), inline=True)
         embed.add_field(name="生死", value="存活" if status.get(
             'alive', True) else "已故", inline=True)
 
