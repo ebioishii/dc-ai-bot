@@ -1,0 +1,25 @@
+[33mcommit acd070b13816d8b8be63eb928eb29e3d6e9a3996[m
+Author: ebioishii <annlin3221@gmail.com>
+Date:   Thu Apr 30 18:16:53 2026 +0800
+
+    改進雞同鴨講的問題 重寫prompt
+
+[33mcommit ea04d785a9c3d6cab4d1bba80ad61efcbc5c8567[m
+Author: ebioishii <annlin3221@gmail.com>
+Date:   Wed Apr 29 23:12:03 2026 +0800
+
+    新增固定的npc、locations，新增/op，新增記憶系統，更新player檔案的運行方式
+
+[33mcommit 87d2c91721c85f42c09e52b104ead937899f9b30[m
+Author: ebioishii <85103655+ebioishii@users.noreply.github.com>
+Date:   Wed Apr 29 23:16:31 2026 +0800
+
+    Clear sensitive keys from .env file
+    
+    Removed sensitive API keys from the environment file.
+
+[33mcommit 8d51e0f3633d64865ab3921e1f1f20cc6c6133ee[m
+Author: ebioishii <annlin3221@gmail.com>
+Date:   Wed Apr 29 13:33:16 2026 +0800
+
+    Initial commit

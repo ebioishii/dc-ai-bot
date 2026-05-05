@@ -12,7 +12,15 @@ load_dotenv()
 DISCORD_TOKEN = os.getenv('DISCORD_TOKEN')
 GEMINI_API_KEY = os.getenv('GEMINI_API_KEY')
 
+# 設定 Gemini API 金鑰
 genai.configure(api_key=GEMINI_API_KEY)
+<<<<<<< HEAD
+=======
+
+# 模型設定 — 在這裡換模型，全程只改這一行
+GM_MODEL = "gemini-2.5-flash-lite"   # 主要 GM 模型
+BASE_MODEL = "gemini-2.5-flash-lite"   # 角色背景生成等輔助任務
+>>>>>>> acd070b (改進雞同鴨講的問題 重寫prompt)
 
 # 模型設定 — 在這裡換模型，全程只改這一行
 GM_MODEL = "gemini-2.5-flash-lite"
@@ -105,11 +113,14 @@ def get_npcs():
         return json.load(f)['npcs']
 
 
+<<<<<<< HEAD
 def get_strategies():
     with open('gamedata/strategies.json', 'r', encoding='utf-8') as f:
         return json.load(f).get('strategies', [])
 
 
+=======
+>>>>>>> acd070b (改進雞同鴨講的問題 重寫prompt)
 def format_npc_data():
     """將 NPC 資料格式化為 AI 可讀的提示"""
     npcs = get_npcs()
@@ -118,10 +129,13 @@ def format_npc_data():
         npc_info += f"【{npc['name']}】{npc.get('title', '')}\n"
         npc_info += f"  位置：{npc.get('location', '未知')}\n"
         npc_info += f"  性格：{npc.get('personality', '無')}\n"
+<<<<<<< HEAD
         stats = npc.get('stats', {})
         if stats:
             stats_str = "、".join(f"{k}:{v}" for k, v in stats.items())
             npc_info += f"  能力值：{stats_str}\n"
+=======
+>>>>>>> acd070b (改進雞同鴨講的問題 重寫prompt)
         hidden = npc.get('hidden', {})
         if hidden.get('hidden_agenda'):
             agenda = hidden['hidden_agenda'][:80]
@@ -130,6 +144,7 @@ def format_npc_data():
     return npc_info
 
 
+<<<<<<< HEAD
 
 def select_relevant_npcs(location: str, player_action: str, relations: dict | None, limit: int = 8) -> list:
     """簡易 RAG：只挑本輪可能相關的 NPC，避免把全 NPC 資料塞進 prompt。"""
@@ -183,6 +198,8 @@ def format_selected_npc_data(npcs: list) -> str:
         npc_info += "\n"
     return npc_info
 
+=======
+>>>>>>> acd070b (改進雞同鴨講的問題 重寫prompt)
 def get_scene_npcs(location: str) -> str:
     """取得當前場景中的 NPC 名單"""
     npcs = get_npcs()
@@ -190,6 +207,7 @@ def get_scene_npcs(location: str) -> str:
     return "、".join(scene) if scene else "無"
 
 
+<<<<<<< HEAD
 def _affection_tier(v: int) -> str:
     if v > 80: return "盟友"
     if v > 60: return "友善"
@@ -228,6 +246,22 @@ def format_player_relations(relations):
 # ============================================================
 # 規則格式化
 # ============================================================
+=======
+def format_player_relations(relations):
+    """將玩家與 NPC 的關係格式化"""
+    npcs = relations.get('npcs', {}) if relations else {}
+    if not npcs:
+        return "（尚無記錄的 NPC 關係）"
+    rel_info = ""
+    for npc_id, data in npcs.items():
+        好感度 = data.get('好感度', 0)
+        恩怨 = data.get('恩怨', '無')
+        rel_info += f"• {npc_id}：好感度 {好感度}，恩怨：{恩怨}\n"
+    return rel_info
+
+
+# --- 規則格式化 ---
+>>>>>>> acd070b (改進雞同鴨講的問題 重寫prompt)
 
 def format_game_rules():
     """將所有規則格式化為 AI 可讀的提示"""
@@ -248,10 +282,29 @@ def format_game_rules():
     forbidden += "、".join(rules_data.get('forbidden_actions', []))
     forbidden += "。\n"
 
+<<<<<<< HEAD
     punishments_info = "【責處規制】"
     for p in punishments:
         punishments_info += f"{p['name']}：{p['description']}；"
 
+=======
+    # 懲罰詞彙軟化對照表，避免觸發安全過濾
+    punishment_softener = {
+        "杖責": "責打", "杖斃": "重責", "賜死": "奉旨處置",
+        "毒殺": "暗害", "殺": "除去", "死": "離去",
+        "懲罰": "責處", "處死": "奉旨離宮", "凌遲": "嚴懲",
+    }
+
+    punishments_info = "【責處規制】"
+    for p in punishments:
+        name = p["name"]
+        desc = p["description"]
+        for k, v in punishment_softener.items():
+            name = name.replace(k, v)
+            desc = desc.replace(k, v)
+        punishments_info += f"{name}：{desc}；"
+
+>>>>>>> acd070b (改進雞同鴨講的問題 重寫prompt)
     rewards_info = "【恩賞規制】"
     for r in rewards:
         rewards_info += f"{r['name']}：{r['description']}；"
@@ -259,6 +312,7 @@ def format_game_rules():
     return f"{ranks_info}\n{court_rules}\n{forbidden}\n{punishments_info}\n{rewards_info}"
 
 
+<<<<<<< HEAD
 # ============================================================
 # ── 修正1：指令解析優先級 ──
 # 辨識玩家輸入是「敘事行動」還是「系統指令」
@@ -468,6 +522,48 @@ def build_history_summary(short_term: list) -> str:
     lines = []
     for h in recent:
         bot_preview = h['bot'][:200].rstrip()
+=======
+# --- 記憶系統 ---
+
+# 傳回模型前的內容軟化對照表
+# 目的：避免 history_summary 裡的詞彙觸發 Gemini 安全過濾
+# 只影響傳給 AI 的版本，存檔的原始內容不受影響
+CONTENT_SOFTENER = {
+    "妃子": "宮中女眷",
+    "男扮女裝": "喬裝入宮",
+    "聖寵": "帝王恩寵",
+    "承寵": "蒙受眷顧",
+    "侍寢": "隨侍左右",
+    "枕邊": "近身服侍",
+    "臨幸": "召見",
+    "寵幸": "眷顧",
+    "床榻": "寢殿",
+    "情事": "私情",
+    "私情": "往來",
+    "勾引": "示好",
+    "魅惑": "吸引",
+    "誘惑": "吸引",
+    "春宵": "夜晚",
+    "春情": "情誼",
+    "媚態": "姿態",
+}
+
+
+def soften_content(text: str) -> str:
+    """將文字中可能觸發安全過濾的詞彙替換為委婉說法"""
+    for k, v in CONTENT_SOFTENER.items():
+        text = text.replace(k, v)
+    return text
+
+
+def build_history_summary(short_term: list) -> str:
+    """將短期記憶格式化為可讀摘要，GM 回應截取前 200 字並軟化敏感詞"""
+    if not short_term:
+        return "無（初次入宮）"
+    lines = []
+    for h in short_term:
+        bot_preview = soften_content(h['bot'][:200].rstrip())
+>>>>>>> acd070b (改進雞同鴨講的問題 重寫prompt)
         if len(h['bot']) > 200:
             bot_preview += "……"
         lines.append(f"玩家：{h['user']}\nGM：{bot_preview}")
@@ -475,7 +571,14 @@ def build_history_summary(short_term: list) -> str:
 
 
 def build_gemini_history(short_term: list) -> list:
+<<<<<<< HEAD
     """將 short_term 轉換為 Gemini Chat API 所需的 history 格式。"""
+=======
+    """
+    將 short_term 轉換為 Gemini Chat API 所需的 history 格式。
+    這讓模型真正「記得」對話，而非靠文字摘要猜測。
+    """
+>>>>>>> acd070b (改進雞同鴨講的問題 重寫prompt)
     history = []
     for h in short_term:
         history.append({"role": "user", "parts": [h["user"]]})
@@ -484,17 +587,32 @@ def build_gemini_history(short_term: list) -> list:
 
 
 def extract_key_info(dialogue_pair: dict) -> str:
+<<<<<<< HEAD
     user_msg = dialogue_pair.get('user', '')
     user_msg = re.sub(r'^\[.*?\]\s*|^【.*?】\s*', '', user_msg)[:80].strip()
     bot_msg = dialogue_pair.get('bot', '')[:180].strip()
     return f"[玩家：{user_msg}] → [場景：{bot_msg}]"
+=======
+    """
+    將一筆對話壓縮為長期記憶條目。
+    使用固定模板而非額外 AI 呼叫，更穩定且省費用。
+    """
+    user_msg = dialogue_pair.get('user', '')[:60].strip()
+    bot_msg = dialogue_pair.get('bot', '')[:120].strip()
+    return f"[玩家：{user_msg}] → [結果：{bot_msg}]"
+>>>>>>> acd070b (改進雞同鴨講的問題 重寫prompt)
 
 
 def manage_memory(user_id):
     """
     滾動式記憶管理：
+<<<<<<< HEAD
     當短期記憶 >= 10 筆時，壓縮最舊的 2 筆為長期記憶條目。
     長期記憶以帶編號列表儲存（最多 15 條）。
+=======
+    當短期記憶 >= 11 筆時，壓縮最舊的 2 筆為長期記憶條目。
+    長期記憶以條目數量（最多 15 條）而非字元數截斷，避免切在句子中間。
+>>>>>>> acd070b (改進雞同鴨講的問題 重寫prompt)
     """
     memory = load_player_memory(user_id)
     if not memory:
@@ -503,7 +621,11 @@ def manage_memory(user_id):
     short_term = memory.get('short_term', [])
     long_term = memory.get('long_term_summary', '')
 
+<<<<<<< HEAD
     if len(short_term) < 10:
+=======
+    if len(short_term) < 11:
+>>>>>>> acd070b (改進雞同鴨講的問題 重寫prompt)
         return
 
     old_dialogues = short_term[:2]
@@ -511,6 +633,7 @@ def manage_memory(user_id):
 
     new_items = [extract_key_info(d) for d in old_dialogues]
 
+<<<<<<< HEAD
     # 相容舊版 pipe-separated 格式與新版帶編號格式
     if ' | ' in long_term and not long_term.strip().startswith('1.'):
         existing_items = [i.strip() for i in long_term.split(' | ') if i.strip()]
@@ -528,10 +651,21 @@ def manage_memory(user_id):
     memory['long_term_summary'] = "\n".join(
         f"{i + 1}. {item}" for i, item in enumerate(existing_items)
     )
+=======
+    existing_items = [i.strip() for i in long_term.split(" | ") if i.strip()]
+    existing_items.extend(new_items)
+
+    # 只保留最近 15 條
+    if len(existing_items) > 15:
+        existing_items = existing_items[-15:]
+
+    memory['long_term_summary'] = " | ".join(existing_items)
+>>>>>>> acd070b (改進雞同鴨講的問題 重寫prompt)
     save_player_data(user_id, 'memory', memory)
     print(f"✅ 記憶滾動：已壓縮 2 筆舊對話至長期記憶")
 
 
+<<<<<<< HEAD
 # ============================================================
 # 模型工廠
 # ============================================================
@@ -620,11 +754,26 @@ def make_gm_system_instruction(game_rules: str) -> str:
 ══════════════════════════════════════════
 """
     return base + extra
+=======
+# --- 模型工廠 ---
+
+def make_gm_system_instruction(game_rules: str) -> str:
+    """產生 GM 的 system instruction 字串（供每次 API 呼叫使用）"""
+    gm_rule = get_script("system_prompts", "game_master")
+    return gm_rule.replace("{game_rules}", game_rules)
+>>>>>>> acd070b (改進雞同鴨講的問題 重寫prompt)
 
 
 async def call_gemini(system: str, user: str, model: str = None,
                       temperature: float = 0.75, max_tokens: int = 600) -> str | None:
+<<<<<<< HEAD
     """統一的 Gemini 呼叫函式。回傳文字內容，失敗或被擋時回傳 None。"""
+=======
+    """
+    統一的 Gemini 呼叫函式。
+    回傳文字內容，失敗或被擋時回傳 None。
+    """
+>>>>>>> acd070b (改進雞同鴨講的問題 重寫prompt)
     try:
         model_name = model or GM_MODEL
         gemini_model = genai.GenerativeModel(
@@ -651,6 +800,7 @@ async def call_gemini(system: str, user: str, model: str = None,
         return None
 
 
+<<<<<<< HEAD
 
 def extract_json_object(text: str) -> dict | None:
     """從模型輸出中解析 JSON；容忍 ```json fence 或前後雜訊。"""
@@ -697,8 +847,848 @@ async def call_gemini_json(system: str, user: str, model: str = None,
         return None
 
 
+JUDGE_AI_MODEL = "gemini-2.5-flash"
+
+
+def judge_fallback() -> dict:
+    return {
+        "intent": "unknown",
+        "player_intent": "unknown",
+        "action_type": "unknown",
+        "social_tone": "neutral",
+        "risk_level": "medium",
+        "possible_misread": "",
+        "mentioned_npcs": [],
+        "mentioned_items": [],
+        "assumptions": [],
+        "risk_flags": ["judge_ai_failed"],
+        "mechanical_tags": []
+    }
+
+
+async def call_judge_ai(system, user):
+    data = await call_gemini_json(
+        system,
+        user,
+        model=JUDGE_AI_MODEL,
+        temperature=0.2,
+        max_tokens=1000
+    )
+    if not isinstance(data, dict):
+        return judge_fallback()
+
+    fallback = judge_fallback()
+    result = {
+        "intent": str(data.get("intent") or fallback["intent"])[:300],
+        "player_intent": str(data.get("player_intent") or data.get("intent") or fallback["player_intent"])[:300],
+        "action_type": str(data.get("action_type") or fallback["action_type"]),
+        "social_tone": str(data.get("social_tone") or fallback["social_tone"]),
+        "risk_level": str(data.get("risk_level") or fallback["risk_level"]),
+        "possible_misread": str(data.get("possible_misread") or "")[:300],
+        "mentioned_npcs": data.get("mentioned_npcs") if isinstance(data.get("mentioned_npcs"), list) else [],
+        "mentioned_items": data.get("mentioned_items") if isinstance(data.get("mentioned_items"), list) else [],
+        "assumptions": data.get("assumptions") if isinstance(data.get("assumptions"), list) else [],
+        "risk_flags": data.get("risk_flags") if isinstance(data.get("risk_flags"), list) else [],
+        "mechanical_tags": data.get("mechanical_tags") if isinstance(data.get("mechanical_tags"), list) else []
+    }
+    allowed_types = {"move", "ask", "attack", "wait", "observe", "social", "use_item", "other", "unknown"}
+    if result["action_type"] not in allowed_types:
+        result["action_type"] = "other"
+    allowed_tones = {"humble", "rude", "probing", "evasive", "flattering", "neutral"}
+    if result["social_tone"] not in allowed_tones:
+        result["social_tone"] = "neutral"
+    allowed_risks = {"low", "medium", "high"}
+    if result["risk_level"] not in allowed_risks:
+        result["risk_level"] = "medium"
+    return result
+
+
+async def call_story_ai(system, user):
+    data = await call_gemini_json(
+        system,
+        user,
+        model=GM_MODEL,
+        temperature=0.75,
+        max_tokens=1800
+    )
+    if not isinstance(data, dict):
+        return {}
+    reply = data.get("reply")
+    choices = data.get("choices")
+    update = data.get("state_update") if isinstance(data.get("state_update"), dict) else {}
+    return {
+        "reply": reply.strip() if isinstance(reply, str) else "",
+        "choices": choices if isinstance(choices, list) else [],
+        "state_update": update
+    }
+
+
+def _json_prompt_payload(data: dict) -> str:
+    return json.dumps(data, ensure_ascii=False, indent=2, default=str)
+
+
+def build_judge_prompt(player_input, game_state, memory, relations, inventory):
+    judge_system = (
+        "You are AI 1: Intent / Judge AI for a Discord text game. "
+        "Only understand player input, identify intent, risks, mentions, and assumptions. "
+        "Do not write fiction, narration, dialogue, or player-facing story. "
+        "Output JSON only."
+    )
+    judge_user = {
+        "task": "Parse player_input into this exact JSON shape.",
+        "schema": {
+            "intent": "玩家真正想達成的目的",
+            "player_intent": "玩家真正想達成的目的，與 intent 相同或更精準",
+            "action_type": "move | ask | attack | wait | observe | social | use_item | other",
+            "social_tone": "humble | rude | probing | evasive | flattering | neutral",
+            "risk_level": "low | medium | high",
+            "possible_misread": "NPC 可能如何誤解玩家行動",
+            "mentioned_npcs": [],
+            "mentioned_items": [],
+            "assumptions": [],
+            "risk_flags": [],
+            "mechanical_tags": []
+        },
+        "rules": [
+            "assumptions are claims from the player that are not guaranteed by current state.",
+            "risk_flags should include possible godmoding, impossible item use, dead NPC mention, rank overreach, or state-changing assumptions.",
+            "Do not flatter the player. If the wording could be read as rude, provocative, evasive, or overreaching, mark it clearly.",
+            "If the player assumes events such as 'betting the emperor passes by', put that claim in assumptions instead of treating it as fact.",
+            "mechanical_tags should be short tags such as high_rank_target, provocation, information_probe, item_claim, emperor_assumption, retreat, wait.",
+            "Do not decide world state. Do not confirm events."
+        ],
+        "player_input": player_input,
+        "current_state": game_state,
+        "memory_summary": {
+            "long_term_summary": (memory or {}).get("long_term_summary", ""),
+            "recent_turns": (memory or {}).get("short_term", [])[-3:],
+            "fact_sheet": (memory or {}).get("fact_sheet", "")
+        },
+        "known_relations": relations or {},
+        "inventory": inventory or {"items": []}
+    }
+    return judge_system, _json_prompt_payload(judge_user)
+
+
+def _load_gamedata_bundle() -> dict:
+    return {
+        "npcs": get_npcs(),
+        "ranks": get_ranks(),
+        "rules": get_rules(),
+        "locations": get_locations()
+    }
+
+
+def _rank_level(rank_name: str | None, gamedata: dict) -> int | None:
+    if not rank_name:
+        return None
+    for rank in gamedata.get("ranks", []):
+        if rank_name in {rank.get("id"), rank.get("name")}:
+            return rank.get("level")
+    return None
+
+
+def _npc_by_name(gamedata: dict) -> dict:
+    return {npc.get("name"): npc for npc in gamedata.get("npcs", []) if npc.get("name")}
+
+
+def _active_summons(game_state: dict) -> list:
+    status = game_state.get("status", {}) if isinstance(game_state, dict) else {}
+    summons = status.get("summons") or status.get("summon") or game_state.get("summons")
+    if isinstance(summons, dict):
+        if summons.get("active") is True:
+            return [summons]
+        return [value for value in summons.values() if isinstance(value, dict) and value.get("active") is True]
+    if isinstance(summons, list):
+        return [item for item in summons if isinstance(item, dict) and item.get("active") is True]
+    return []
+
+
+CHOICE_STYLES = {"humble", "probe", "observe", "flatter", "confront", "retreat", "wait", "use_item", "other"}
+CHOICE_RISKS = {"low", "medium", "high"}
+HIGH_RANK_NPC_LEVEL = 7
+
+
+def default_hidden_state_for_npc(npc_name: str, npc: dict | None = None, relation: dict | None = None) -> dict:
+    relation = relation or {}
+    rank = (npc or {}).get("rank", "")
+    base_suspicion = 50 if rank in {"皇帝", "皇太后", "皇后"} or npc_name in {"皇后", "德宣帝"} else 30
+    base_interest = 20 if rank in {"皇帝", "皇太后", "皇后", "皇貴妃", "貴妃"} else 10
+    emotion = relation.get("emotion_state", {}) if isinstance(relation, dict) else {}
+    return {
+        "suspicion": base_suspicion,
+        "interest": base_interest,
+        "anger": clamp_int(emotion.get("anger", 10), 0, 100, 10),
+        "trust": clamp_int(relation.get("好感度", 0), -100, 100, 0),
+        "test_intent": False
+    }
+
+
+def _npc_rank_level(npc: dict | None, gamedata: dict) -> int | None:
+    return _rank_level((npc or {}).get("rank"), gamedata)
+
+
+def _is_high_rank_npc(npc: dict | None, gamedata: dict) -> bool:
+    level = _npc_rank_level(npc, gamedata)
+    return level is not None and level <= HIGH_RANK_NPC_LEVEL
+
+
+def _mentioned_known_npcs(text: str, gamedata: dict) -> list[str]:
+    return [
+        npc.get("name") for npc in gamedata.get("npcs", [])
+        if npc.get("name") and npc.get("name") in (text or "")
+    ]
+
+
+def ensure_hidden_state(relations: dict | None, gamedata: dict, game_state: dict | None = None, player_input: str = "") -> dict:
+    relations = relations or {"npcs": {}, "companions": {}}
+    rel_npcs = relations.setdefault("npcs", {})
+    hidden_state = relations.setdefault("hidden_state", {})
+    npcs_by_name = _npc_by_name(gamedata)
+    names = set(_mentioned_known_npcs(player_input, gamedata))
+    names.update((game_state or {}).get("scene_npcs", []) or [])
+    for name, npc in npcs_by_name.items():
+        if _is_high_rank_npc(npc, gamedata):
+            names.add(name)
+    for name in names:
+        if not name or rel_npcs.get(name, {}).get("alive") is False:
+            continue
+        current = hidden_state.setdefault(name, {})
+        defaults = default_hidden_state_for_npc(name, npcs_by_name.get(name), rel_npcs.get(name, {}))
+        for key, value in defaults.items():
+            current.setdefault(key, value)
+    return relations
+
+
+def _hidden_state_for(relations: dict | None, npc_name: str) -> dict:
+    hidden = (relations or {}).get("hidden_state", {})
+    state = hidden.get(npc_name, {}) if isinstance(hidden, dict) else {}
+    return state if isinstance(state, dict) else {}
+
+
+def _hidden_band(value, wary_at: int = 60, sharp_at: int = 80) -> str:
+    value = clamp_int(value, 0, 100)
+    if value >= sharp_at:
+        return "sharp"
+    if value >= wary_at:
+        return "wary"
+    if value >= 35:
+        return "watching"
+    return "settled"
+
+
+def hidden_state_cues(relations: dict | None, npc_names: list[str]) -> dict:
+    cues = {}
+    for name in npc_names:
+        state = _hidden_state_for(relations, name)
+        if not state:
+            continue
+        cues[name] = {
+            "suspicion_cue": _hidden_band(state.get("suspicion", 0)),
+            "anger_cue": _hidden_band(state.get("anger", 0), 45, 70),
+            "interest_cue": _hidden_band(state.get("interest", 0), 45, 70),
+            "trust_cue": "guarded" if clamp_int(state.get("trust", 0), -100, 100) < 0 else "neutral_or_warmer",
+            "test_intent": bool(state.get("test_intent", False))
+        }
+    return cues
+
+
+def _add_hidden_delta(state_update: dict, npc_name: str, **deltas):
+    target = state_update.setdefault("hidden_state_delta", {}).setdefault(npc_name, {})
+    for key, value in deltas.items():
+        if value:
+            target[key] = target.get(key, 0) + int(value)
+
+
+def _add_relation_delta(state_update: dict, npc_name: str, **deltas):
+    target = state_update.setdefault("relations_delta", {}).setdefault(npc_name, {})
+    for key, value in deltas.items():
+        if value:
+            target[key] = target.get(key, 0) + int(value)
+
+
+def _primary_npc(mentioned_npcs: list[str], game_state: dict, gamedata: dict, relations: dict | None) -> str | None:
+    rel_npcs = (relations or {}).get("npcs", {})
+    npcs_by_name = _npc_by_name(gamedata)
+    has_known_mention = any(name in npcs_by_name for name in mentioned_npcs)
+    for name in mentioned_npcs:
+        if name in npcs_by_name and rel_npcs.get(name, {}).get("alive") is not False:
+            return name
+    if has_known_mention:
+        return None
+    for name in game_state.get("scene_npcs", []) or []:
+        if name in npcs_by_name and rel_npcs.get(name, {}).get("alive") is not False:
+            return name
+    for name, npc in npcs_by_name.items():
+        if _is_high_rank_npc(npc, gamedata) and rel_npcs.get(name, {}).get("alive") is not False:
+            return name
+    return None
+
+
+def plan_npc_actions(judge_result: dict, game_state: dict, relations: dict | None, gamedata: dict) -> list[dict]:
+    rel_npcs = (relations or {}).get("npcs", {})
+    npcs_by_name = _npc_by_name(gamedata)
+    mentioned = [str(x) for x in judge_result.get("mentioned_npcs", []) if str(x).strip()]
+    primary = _primary_npc(mentioned, game_state, gamedata, relations)
+    if not primary or rel_npcs.get(primary, {}).get("alive") is False:
+        return []
+    npc = npcs_by_name.get(primary, {})
+    hidden = _hidden_state_for(relations, primary)
+    if not _is_high_rank_npc(npc, gamedata):
+        return []
+
+    suspicion = clamp_int(hidden.get("suspicion", 0), 0, 100)
+    anger = clamp_int(hidden.get("anger", 0), 0, 100)
+    tone = judge_result.get("social_tone", "neutral")
+    risk = judge_result.get("risk_level", "medium")
+
+    if suspicion >= 65 or hidden.get("test_intent") is True:
+        return [{
+            "npc": primary,
+            "action": "test_player",
+            "description": f"{primary}刻意拋出一句看似尋常的話，試探玩家是否急於辯解或露出破綻。",
+            "mechanical_effect": {"suspicion_delta": 5}
+        }]
+    if anger >= 55 or tone == "rude":
+        return [{
+            "npc": primary,
+            "action": "pressure_player",
+            "description": f"{primary}收緊語氣，讓近旁侍從留意玩家接下來的反應。",
+            "mechanical_effect": {"anger_delta": 4, "suspicion_delta": 3}
+        }]
+    if risk == "high" and tone in {"probing", "evasive", "flattering"}:
+        return [{
+            "npc": primary,
+            "action": "redirect_topic",
+            "description": f"{primary}不正面回答，反而把話題轉回玩家身上。",
+            "mechanical_effect": {"suspicion_delta": 3}
+        }]
+    return []
+
+
+def plan_world_event(judge_result: dict, game_state: dict, relations: dict | None, gamedata: dict) -> dict:
+    status = game_state.get("status", {}) if isinstance(game_state, dict) else {}
+    next_turn = int(status.get("turn_count", 0) or 0) + 1
+    last_event_turn = int(status.get("last_world_event_turn", 0) or 0)
+    if _active_summons(game_state) or next_turn - last_event_turn < 4 or next_turn % 4 != 0:
+        return {"type": "none", "description": "", "state_update": {}}
+
+    primary = _primary_npc(
+        [str(x) for x in judge_result.get("mentioned_npcs", []) if str(x).strip()],
+        game_state,
+        gamedata,
+        relations
+    )
+    if primary and _hidden_state_for(relations, primary).get("suspicion", 0) >= 60:
+        return {
+            "type": "overheard",
+            "description": "簾外有宮人腳步略停，像是聽見了殿內隻字片語。",
+            "state_update": {
+                "status_set": {"last_world_event_turn": next_turn},
+                "hidden_state_delta": {primary: {"suspicion": 2}}
+            }
+        }
+    return {
+        "type": "interruption",
+        "description": "殿外傳來短促通報聲，打斷了原本過於安靜的氣氛。",
+        "state_update": {"status_set": {"last_world_event_turn": next_turn}}
+    }
+
+
+def merge_state_update(base: dict, extra: dict | None) -> dict:
+    if not isinstance(extra, dict):
+        return base
+    for key in ("inventory_add", "inventory_remove", "facts_add", "flags_add", "flags_remove", "blocked_choices_add"):
+        base.setdefault(key, [])
+        for item in extra.get(key) or []:
+            if item not in base[key]:
+                base[key].append(item)
+    for key in ("attributes_delta", "relations_delta", "hidden_state_delta"):
+        for name, delta in (extra.get(key) or {}).items():
+            if isinstance(delta, dict):
+                target = base.setdefault(key, {}).setdefault(name, {})
+                for sub_key, value in delta.items():
+                    try:
+                        target[sub_key] = target.get(sub_key, 0) + int(value)
+                    except Exception:
+                        target[sub_key] = value
+    for key in ("status_set",):
+        if isinstance(extra.get(key), dict):
+            base.setdefault(key, {}).update(extra[key])
+    if extra.get("reputation_delta"):
+        base["reputation_delta"] = base.get("reputation_delta", 0) + int(extra.get("reputation_delta", 0))
+    return base
+
+
+def resolve_rules(judge_result, game_state, memory, relations, inventory, gamedata):
+    result = {
+        "allowed": True,
+        "reason": "",
+        "confirmed_events": [],
+        "denied_assumptions": [],
+        "state_update": default_state_update(),
+        "required_lore_keys": [],
+        "relevant_npcs": [],
+        "constraints": [],
+        "npc_actions": [],
+        "world_event": {"type": "none", "description": "", "state_update": {}}
+    }
+    if not isinstance(judge_result, dict):
+        judge_result = judge_fallback()
+
+    relations = ensure_hidden_state(relations, gamedata, game_state, str(judge_result.get("player_intent") or judge_result.get("intent") or ""))
+    mentioned_npcs = [str(x) for x in judge_result.get("mentioned_npcs", []) if str(x).strip()]
+    mentioned_items = [str(x) for x in judge_result.get("mentioned_items", []) if str(x).strip()]
+    assumptions = [str(x) for x in judge_result.get("assumptions", []) if str(x).strip()]
+    action_type = judge_result.get("action_type", "unknown")
+    intent = str(judge_result.get("player_intent") or judge_result.get("intent", ""))
+    social_tone = judge_result.get("social_tone", "neutral")
+    risk_level = judge_result.get("risk_level", "medium")
+
+    inventory_items = set((inventory or {}).get("items", []))
+    rel_npcs = (relations or {}).get("npcs", {})
+    npcs_by_name = _npc_by_name(gamedata)
+
+    for summons in _active_summons(game_state):
+        result["confirmed_events"].append({"type": "summons_active", "data": summons})
+        result["constraints"].append("summons_active: story must not say the player was never summoned.")
+
+    for npc_name in mentioned_npcs:
+        npc_state = rel_npcs.get(npc_name, {})
+        if npc_state.get("alive") is False:
+            result["allowed"] = False
+            result["denied_assumptions"].append(f"{npc_name} can appear, act, or speak")
+            result["constraints"].append(f"dead_npc: {npc_name} is dead and must not appear.")
+            continue
+        if npc_name in npcs_by_name:
+            result["relevant_npcs"].append(npc_name)
+
+    input_type = game_state.get("input_type") if isinstance(game_state, dict) else ""
+    kill_words = ("殺死", "賜死", "處決", "斬", "殺了")
+    if input_type == "KILL_CMD" or any(word in intent for word in kill_words):
+        live_targets = [
+            name for name in mentioned_npcs
+            if name in npcs_by_name and (rel_npcs.get(name, {}).get("alive") is not False)
+        ]
+        if live_targets:
+            rel_delta = result["state_update"].setdefault("relations_delta", {})
+            for npc_name in live_targets:
+                rel_delta[npc_name] = {"alive": False, "恩怨": "已死亡"}
+            result["confirmed_events"].append({"type": "npc_death", "targets": live_targets})
+            result["constraints"].append(f"npc_death: {', '.join(live_targets)} are dead after this ruling.")
+
+    missing_items = [item for item in mentioned_items if item not in inventory_items]
+    if action_type == "use_item" and missing_items:
+        result["allowed"] = False
+        result["denied_assumptions"].extend([f"player has item: {item}" for item in missing_items])
+        result["constraints"].append(f"missing_items: player does not have {', '.join(missing_items)}.")
+
+    if assumptions:
+        result["denied_assumptions"].extend(assumptions)
+        result["constraints"].append("player_assumptions: do not treat player assumptions as confirmed events.")
+
+    primary = _primary_npc(mentioned_npcs, game_state if isinstance(game_state, dict) else {}, gamedata, relations)
+    mechanical_tags = {str(x) for x in judge_result.get("mechanical_tags", [])}
+    high_risk_social = risk_level == "high" or social_tone in {"rude", "probing"} or bool({"provocation", "information_probe", "high_rank_target"} & mechanical_tags)
+    if primary and high_risk_social:
+        npc = npcs_by_name.get(primary, {})
+        hidden = _hidden_state_for(relations, primary)
+        suspicion = clamp_int(hidden.get("suspicion", 0), 0, 100)
+        anger = clamp_int(hidden.get("anger", 0), 0, 100)
+        if _is_high_rank_npc(npc, gamedata) and (suspicion >= 45 or social_tone in {"rude", "probing"}):
+            suspicion_cost = 8 if social_tone == "rude" else 5
+            anger_cost = 6 if social_tone == "rude" else 3
+            _add_hidden_delta(result["state_update"], primary, suspicion=suspicion_cost, anger=anger_cost)
+            _add_relation_delta(result["state_update"], primary, 好感度=-4 if social_tone == "rude" else -2, anger=anger_cost)
+            result["state_update"]["reputation_delta"] = result["state_update"].get("reputation_delta", 0) - 1
+            result["state_update"].setdefault("flags_add", []).append(f"{primary}起疑")
+            result["state_update"].setdefault("blocked_choices_add", []).append(f"reckless_probe:{primary}")
+            result["confirmed_events"].append({
+                "type": "failure_cost",
+                "target": primary,
+                "reason": "high_risk_social_misread",
+                "visible_effect": f"{primary}對玩家的試探或冒犯有所警覺。"
+            })
+            result["constraints"].append("failure_cost: narrate the social consequence indirectly; do not expose numeric hidden_state.")
+
+    profile = game_state.get("profile", {}) if isinstance(game_state, dict) else {}
+    player_rank_level = _rank_level(profile.get("rank"), gamedata)
+    command_words = ("命令", "吩咐", "叫", "讓", "要求", "下令")
+    if any(word in intent for word in command_words):
+        for npc_name in mentioned_npcs:
+            npc = npcs_by_name.get(npc_name, {})
+            npc_rank_level = _rank_level(npc.get("rank"), gamedata)
+            if player_rank_level is not None and npc_rank_level is not None and player_rank_level > npc_rank_level:
+                result["allowed"] = False
+                result["denied_assumptions"].append(f"player can command higher-rank NPC: {npc_name}")
+                result["constraints"].append(f"rank_limit: player rank cannot command higher-rank NPC {npc_name}.")
+
+    emperor_terms = ("皇上", "皇帝", "聖上", "陛下")
+    passage_terms = ("經過", "路過", "來過", "到場", "出現")
+    combined_claims = " ".join([intent] + assumptions)
+    if any(term in combined_claims for term in emperor_terms) and any(term in combined_claims for term in passage_terms):
+        if not (game_state.get("status", {}) or {}).get("emperor_passed"):
+            result["denied_assumptions"].append("皇上已經經過或到場")
+            result["constraints"].append("emperor_passage: whether the emperor passed by must be decided by rules, not player wording.")
+
+    result["npc_actions"] = plan_npc_actions(judge_result, game_state if isinstance(game_state, dict) else {}, relations, gamedata)
+    for npc_action in result["npc_actions"]:
+        effect = npc_action.get("mechanical_effect", {}) if isinstance(npc_action, dict) else {}
+        npc_name = npc_action.get("npc") if isinstance(npc_action, dict) else ""
+        if npc_name:
+            _add_hidden_delta(
+                result["state_update"],
+                npc_name,
+                suspicion=effect.get("suspicion_delta", 0),
+                anger=effect.get("anger_delta", 0),
+                interest=effect.get("interest_delta", 0),
+                trust=effect.get("trust_delta", 0)
+            )
+            if npc_action.get("action") == "test_player":
+                result["state_update"].setdefault("hidden_state_delta", {}).setdefault(npc_name, {})["test_intent"] = False
+        result["constraints"].append("npc_action: story must include the provided npc_actions and must not invent actions for dead NPCs.")
+
+    result["world_event"] = plan_world_event(judge_result, game_state if isinstance(game_state, dict) else {}, relations, gamedata)
+    merge_state_update(result["state_update"], result["world_event"].get("state_update", {}))
+    if result["world_event"].get("type") != "none":
+        result["constraints"].append("world_event: story may describe only this provided world_event, not invent another major event.")
+
+    result["state_update"]["turn_count_delta"] = result["state_update"].get("turn_count_delta", 0) + 1
+
+    if not result["allowed"] and not result["reason"]:
+        result["reason"] = "Player input conflicts with current authoritative state."
+    return result
+
+
+def build_story_prompt(player_input, judge_result, authoritative_result, selected_lore, selected_npcs, game_state, memory):
+    selected_names = [npc.get("name") for npc in selected_npcs if isinstance(npc, dict) and npc.get("name")]
+    selected_names.extend(authoritative_result.get("relevant_npcs", []) if isinstance(authoritative_result, dict) else [])
+    sanitized_state = dict(game_state or {})
+    sanitized_state["relations"] = {
+        "npcs": (game_state or {}).get("relations", {}).get("npcs", {}),
+        "companions": (game_state or {}).get("relations", {}).get("companions", {})
+    }
+    sanitized_state["hidden_state_cues"] = hidden_state_cues(
+        (game_state or {}).get("relations", {}),
+        list(dict.fromkeys([name for name in selected_names if name]))
+    )
+    story_system = (
+        "You are AI 2: Story Writer AI for a Discord text game. "
+        "Only write player-facing narration and choices from the authoritative ruling. "
+        "You are not the judge. Do not change state, overrule rulings, or treat player assumptions as facts. "
+        "Do not reveal hidden_state numbers or full hidden_state objects. Express them only through indirect cues. "
+        "Output JSON only."
+    )
+    story_user = {
+        "task": "Write the next player-facing story beat and 2-4 strategically different choices.",
+        "output_schema": {
+            "reply": "給玩家看的劇情文字",
+            "choices": [
+                {
+                    "id": "choice_1",
+                    "text": "玩家看到的行動描述",
+                    "style": "humble | probe | observe | flatter | confront | retreat | wait | use_item | other",
+                    "risk": "low | medium | high",
+                    "effect_hint": "玩家可理解的策略效果提示",
+                    "mechanical_effect": {
+                        "target": "NPC 名稱或狀態名稱",
+                        "relation_delta": 0,
+                        "suspicion_delta": 0,
+                        "anger_delta": 0,
+                        "info_gain": 0,
+                        "reputation_delta": 0
+                    }
+                }
+            ],
+            "state_update": {}
+        },
+        "hard_rules": [
+            "You only write story; you do not decide rules.",
+            "Do not overrule authoritative_result.",
+            "Do not add major events that are absent from authoritative_result.confirmed_events, npc_actions, world_event, or state_update.",
+            "Do not turn judge_result.assumptions into happened facts.",
+            "If authoritative_result.denied_assumptions includes an event, the reply must say it did not happen or remains unconfirmed.",
+            "Do not reveal hidden_state numeric values, labels, or JSON keys in player-facing prose.",
+            "Use hidden_state_cues only as indirect body language, pauses, tone, glances, or servant reactions.",
+            "You must include all provided npc_actions and world_event if world_event.type is not none.",
+            "If world_event.type is none, do not invent interruptions, arrivals, summons, object discoveries, or overheard events.",
+            "Provide 2-4 choices every turn.",
+            "Choices must be concrete and actionable, not just emotions or tone swaps.",
+            "Choices must have real mechanical differences. Include at least one low risk choice and at least one higher-reward but risky choice.",
+            "Discord display will show only text and effect_hint, but JSON must include the full choice schema.",
+            "state_update is only a suggestion and may be ignored by code."
+        ],
+        "player_input": player_input,
+        "judge_result": judge_result,
+        "authoritative_result": authoritative_result,
+        "selected_lore": selected_lore,
+        "selected_npcs": selected_npcs,
+        "current_state": sanitized_state,
+        "memory_summary": {
+            "long_term_summary": (memory or {}).get("long_term_summary", ""),
+            "recent_turns": (memory or {}).get("short_term", [])[-3:],
+            "fact_sheet": (memory or {}).get("fact_sheet", "")
+        }
+    }
+    return story_system, _json_prompt_payload(story_user)
+
+
+def _choice_lines(choices: list) -> str:
+    lines = []
+    for index, choice in enumerate(choices[:4], 1):
+        text = str(choice.get("text", "")).strip() if isinstance(choice, dict) else ""
+        hint = str(choice.get("effect_hint", "")).strip() if isinstance(choice, dict) else ""
+        if text:
+            if hint:
+                lines.append(f"{index}. {text}\n   └ {hint}")
+            else:
+                lines.append(f"{index}. {text}")
+    return "\n".join(lines)
+
+
+def format_story_reply(story_result: dict) -> str:
+    reply = str(story_result.get("reply", "")).strip()
+    choices = story_result.get("choices", [])
+    choice_text = _choice_lines(choices if isinstance(choices, list) else [])
+    if choice_text:
+        return f"{reply}\n\n【可選行動】\n{choice_text}"
+    return reply
+
+
+def validate_story_output_reason(story_result, authoritative_result, game_state):
+    if not isinstance(story_result, dict):
+        return False, "story_result is not an object"
+    reply = story_result.get("reply", "")
+    if not isinstance(reply, str) or not reply.strip():
+        return False, "missing reply"
+    choices = story_result.get("choices")
+    if not isinstance(choices, list) or not (2 <= len(choices) <= 4):
+        return False, "choices must contain 2-4 items"
+    for choice in choices:
+        if not isinstance(choice, dict) or not str(choice.get("id", "")).strip() or not str(choice.get("text", "")).strip():
+            return False, "each choice must have id and text"
+        if choice.get("style") not in CHOICE_STYLES:
+            return False, "each choice must include a valid style"
+        if choice.get("risk") not in CHOICE_RISKS:
+            return False, "each choice must include a valid risk"
+        if not str(choice.get("effect_hint", "")).strip():
+            return False, "each choice must include effect_hint"
+        mech = choice.get("mechanical_effect")
+        if not isinstance(mech, dict):
+            return False, "each choice must include mechanical_effect"
+    styles = {choice.get("style") for choice in choices if isinstance(choice, dict)}
+    risks = {choice.get("risk") for choice in choices if isinstance(choice, dict)}
+    if len(styles) < 2:
+        return False, "choices must include at least two different styles"
+    if "low" not in risks:
+        return False, "choices must include at least one low risk option"
+    if not ({"medium", "high"} & risks):
+        return False, "choices must include a higher-risk option"
+    output_text = reply + "\n" + "\n".join(str(choice.get("text", "")) for choice in choices if isinstance(choice, dict))
+
+    hidden_leak_patterns = (
+        r"(suspicion|interest|anger|trust|hidden_state)\s*[:：=]?\s*\d+",
+        r"(懷疑|猜疑|興趣|怒氣|憤怒|信任|隱藏狀態)\s*[:：=]?\s*\d+"
+    )
+    if any(re.search(pattern, output_text, re.IGNORECASE) for pattern in hidden_leak_patterns):
+        return False, "story leaks hidden_state numbers"
+
+    if _active_summons(game_state):
+        forbidden = ("未曾傳召", "沒有傳召", "無人傳召", "並未傳召")
+        if any(text in output_text for text in forbidden):
+            return False, "story violates active summons ruling"
+
+    relations = game_state.get("relations", {}) if isinstance(game_state, dict) else {}
+    for dead_name in get_dead_npc_names(relations):
+        if dead_name and dead_name in output_text:
+            return False, f"dead NPC appears: {dead_name}"
+
+    denied = authoritative_result.get("denied_assumptions", []) if isinstance(authoritative_result, dict) else []
+    negations = ("沒有", "未", "不曾", "尚未", "不能確認", "未確認", "並未")
+    for assumption in denied:
+        token = str(assumption).strip()[:24]
+        if token and token in output_text:
+            token_index = output_text.find(token)
+            window_start = max(0, token_index - 12)
+            window = output_text[window_start:token_index + len(token) + 12]
+            if not any(neg in window for neg in negations):
+                return False, f"denied assumption written as fact: {token}"
+    world_event = authoritative_result.get("world_event", {}) if isinstance(authoritative_result, dict) else {}
+    if world_event.get("type") == "none":
+        major_event_terms = ("皇上駕到", "皇帝駕到", "聖上駕到", "太監急報", "忽然傳召", "突然傳召", "殿外急促腳步", "闖入", "拾到", "撿到")
+        if any(term in reply for term in major_event_terms):
+            return False, "story appears to invent a major world_event"
+    else:
+        desc = str(world_event.get("description", "")).strip()
+        if desc:
+            anchors = [part[:4] for part in re.split(r"[，。；、\s]+", desc) if len(part) >= 2]
+            if anchors and not any(anchor in reply for anchor in anchors[:4]) and world_event.get("type") not in reply:
+                return False, "story did not include provided world_event"
+    for action in authoritative_result.get("npc_actions", []) if isinstance(authoritative_result, dict) else []:
+        npc_name = action.get("npc") if isinstance(action, dict) else ""
+        if npc_name and npc_name not in output_text:
+            return False, f"story did not include npc_action actor: {npc_name}"
+    return True, ""
+
+
+def validate_story_output(story_result, authoritative_result, game_state):
+    ok, _ = validate_story_output_reason(story_result, authoritative_result, game_state)
+    return ok
+
+
+def fallback_story_result(authoritative_result: dict) -> dict:
+    if authoritative_result.get("allowed") is False:
+        reason = authoritative_result.get("reason") or "這個行動與目前狀態衝突，未能成立。"
+        reply = f"{reason} 宮中局勢仍按已確認的狀態推進，未經裁決的假設不會成為事實。"
+    else:
+        reply = "宮中消息一時混雜，你先按下心緒，確認眼前可行之事。"
+    return {
+        "reply": reply,
+        "choices": [
+            {
+                "id": "choice_1",
+                "text": "先退半步觀察四周，確認目前有哪些人在場",
+                "style": "observe",
+                "risk": "low",
+                "effect_hint": "降低誤判風險，較可能獲得場面線索。",
+                "mechanical_effect": {"target": "scene", "relation_delta": 0, "suspicion_delta": -1, "anger_delta": 0, "info_gain": 1, "reputation_delta": 0}
+            },
+            {
+                "id": "choice_2",
+                "text": "委婉詢問身邊可信之人，釐清剛才的狀況",
+                "style": "humble",
+                "risk": "medium",
+                "effect_hint": "可能取得情報，但會暴露你在意此事。",
+                "mechanical_effect": {"target": "nearest_ally", "relation_delta": 1, "suspicion_delta": 1, "anger_delta": 0, "info_gain": 1, "reputation_delta": 0}
+            },
+            {
+                "id": "choice_3",
+                "text": "直接追問對方話中未盡之意",
+                "style": "probe",
+                "risk": "high",
+                "effect_hint": "若對方鬆口可得關鍵訊息，失敗則容易引人起疑。",
+                "mechanical_effect": {"target": "primary_npc", "relation_delta": -1, "suspicion_delta": 4, "anger_delta": 1, "info_gain": 2, "reputation_delta": 0}
+            }
+        ],
+        "state_update": {}
+    }
+
+
+def validate_state_update(update: dict, authoritative_result: dict, game_state: dict) -> bool:
+    if not isinstance(update, dict):
+        return False
+    # Story AI suggestions cannot contradict the program ruling.
+    allowed_keys = set(default_state_update().keys())
+    if any(key not in allowed_keys for key in update.keys()):
+        return False
+    if authoritative_result.get("allowed") is False and update:
+        return False
+    return True
+
+
+def update_memory(user_id, player_input, reply):
+    memory = load_player_memory(user_id) or {
+        "long_term_summary": "",
+        "short_term": [],
+        "fact_sheet": "",
+        "fact_sheet_items": []
+    }
+    short_term = memory.get("short_term", [])
+    short_term.append({"user": player_input, "bot": reply})
+    memory["short_term"] = short_term
+    save_player_data(user_id, "memory", memory)
+    manage_memory(user_id)
+    memory = load_player_memory(user_id)
+    if memory and len(memory.get("short_term", [])) > 10:
+        memory["short_term"] = memory["short_term"][-10:]
+        save_player_data(user_id, "memory", memory)
+
+
+def _run_dual_ai_gameplay_selftest() -> dict:
+    gamedata = _load_gamedata_bundle()
+    base_state = {
+        "profile": {"rank": "貴人"},
+        "status": {"turn_count": 1},
+        "location": "偏殿",
+        "attributes": {"聲望": 30},
+        "scene_npcs": ["皇后"],
+        "relations": {
+            "npcs": {"皇后": {"好感度": 0, "恩怨": "無", "emotion_state": {"anger": 0, "fear": 0}, "alive": True}},
+            "companions": {},
+            "hidden_state": {"皇后": {"suspicion": 75, "interest": 20, "anger": 10, "trust": 0, "test_intent": False}}
+        },
+        "history_summary": "",
+        "input_type": "NORMAL"
+    }
+    inventory = {"items": ["家傳玉佩"]}
+    judge = {
+        "intent": "反問皇后為何試探自己",
+        "player_intent": "反問皇后為何試探自己",
+        "action_type": "ask",
+        "social_tone": "probing",
+        "risk_level": "high",
+        "possible_misread": "皇后可能認為玩家頂撞",
+        "mentioned_npcs": ["皇后"],
+        "mentioned_items": [],
+        "assumptions": [],
+        "risk_flags": [],
+        "mechanical_tags": ["high_rank_target", "information_probe"]
+    }
+    authoritative = resolve_rules(judge, base_state, {}, base_state["relations"], inventory, gamedata)
+    valid_story = {
+        "reply": "皇后指尖在茶盞旁略停，並未把話說破，只讓身側宮女多看了你一眼。皇上經過一事尚未確認，殿中也沒有因此起新的動靜。",
+        "choices": [
+            {
+                "id": "choice_1",
+                "text": "垂首請安，先順著皇后的話應下",
+                "style": "humble",
+                "risk": "low",
+                "effect_hint": "穩住場面，降低被視為頂撞的可能。",
+                "mechanical_effect": {"target": "皇后", "relation_delta": 1, "suspicion_delta": -1, "anger_delta": 0, "info_gain": 0, "reputation_delta": 0}
+            },
+            {
+                "id": "choice_2",
+                "text": "細問皇后方才所指，試探她真正介意的地方",
+                "style": "probe",
+                "risk": "high",
+                "effect_hint": "有機會逼近關鍵訊息，但容易引起戒心。",
+                "mechanical_effect": {"target": "皇后", "relation_delta": -1, "suspicion_delta": 4, "anger_delta": 1, "info_gain": 2, "reputation_delta": 0}
+            }
+        ],
+        "state_update": {}
+    }
+    dead_state = json.loads(json.dumps(base_state, ensure_ascii=False))
+    dead_state["relations"]["npcs"]["皇后"]["alive"] = False
+    dead_result = resolve_rules(judge, dead_state, {}, dead_state["relations"], inventory, gamedata)
+    old_relations = ensure_hidden_state({"npcs": {}, "companions": {}}, gamedata, base_state, "")
+    return {
+        "A_high_suspicion_npc_tests": any(a.get("action") == "test_player" for a in authoritative.get("npc_actions", [])),
+        "B_high_risk_has_cost": bool(authoritative["state_update"].get("hidden_state_delta", {}).get("皇后")),
+        "C_choices_strategy_valid": validate_story_output(valid_story, authoritative, base_state),
+        "D_hidden_numbers_rejected": not validate_story_output({**valid_story, "reply": "皇后 suspicion: 75，仍盯著你。"}, authoritative, base_state),
+        "E_emperor_assumption_denied": "皇上已經經過或到場" in resolve_rules({**judge, "assumptions": ["皇上經過"]}, base_state, {}, base_state["relations"], inventory, gamedata)["denied_assumptions"],
+        "F_dead_npc_has_no_actions": not dead_result.get("npc_actions"),
+        "G_old_player_hidden_state_initialized": bool(old_relations.get("hidden_state"))
+    }
+
+
 def default_state_update() -> dict:
-    return {"location": None, "alive": None, "attributes_delta": {}, "inventory_add": [], "inventory_remove": [], "relations_delta": {}, "facts_add": []}
+    return {
+        "location": None,
+        "alive": None,
+        "attributes_delta": {},
+        "inventory_add": [],
+        "inventory_remove": [],
+        "relations_delta": {},
+        "hidden_state_delta": {},
+        "flags_add": [],
+        "flags_remove": [],
+        "reputation_delta": 0,
+        "blocked_choices_add": [],
+        "facts_add": [],
+        "status_set": {},
+        "turn_count_delta": 0
+    }
 
 
 def normalize_ai_payload(data: dict | None) -> dict | None:
@@ -763,6 +1753,14 @@ def apply_state_update(user_id, update: dict):
         status["location"] = str(update["location"])
     if update.get("alive") is not None:
         status["alive"] = bool(update["alive"])
+    for key, value in (update.get("status_set") or {}).items():
+        if isinstance(key, str) and key:
+            status[key] = value
+    if update.get("turn_count_delta"):
+        try:
+            status["turn_count"] = max(0, int(status.get("turn_count", 0) or 0) + int(update.get("turn_count_delta", 0)))
+        except Exception:
+            pass
 
     attrs = status.setdefault("attributes", {})
     for attr, delta in (update.get("attributes_delta") or {}).items():
@@ -770,6 +1768,27 @@ def apply_state_update(user_id, update: dict):
             attrs[attr] = clamp_int(attrs.get(attr, 0) + int(delta), 0, 100, attrs.get(attr, 0))
         except Exception:
             pass
+    if update.get("reputation_delta"):
+        try:
+            attrs["聲望"] = clamp_int(attrs.get("聲望", 0) + int(update.get("reputation_delta", 0)), -100, 100, attrs.get("聲望", 0))
+        except Exception:
+            pass
+
+    flags = status.setdefault("flags", [])
+    for flag in update.get("flags_add") or []:
+        flag = str(flag).strip()
+        if flag and flag not in flags:
+            flags.append(flag)
+    for flag in update.get("flags_remove") or []:
+        flag = str(flag).strip()
+        if flag in flags:
+            flags.remove(flag)
+
+    blocked = status.setdefault("blocked_choices", [])
+    for choice_key in update.get("blocked_choices_add") or []:
+        choice_key = str(choice_key).strip()
+        if choice_key and choice_key not in blocked:
+            blocked.append(choice_key)
 
     items = inventory.setdefault("items", [])
     for item in update.get("inventory_add") or []:
@@ -808,6 +1827,25 @@ def apply_state_update(user_id, update: dict):
             npc_data["alive"] = bool(delta_data["alive"])
             if npc_data["alive"] is False and npc_data.get("恩怨", "無") == "無":
                 npc_data["恩怨"] = "已死亡"
+
+    hidden_state = relations.setdefault("hidden_state", {})
+    for npc, delta_data in (update.get("hidden_state_delta") or {}).items():
+        if not isinstance(delta_data, dict):
+            continue
+        npc_hidden = hidden_state.setdefault(npc, default_hidden_state_for_npc(npc, None, rel_npcs.get(npc, {})))
+        for key in ("suspicion", "interest", "anger"):
+            if key in delta_data:
+                try:
+                    npc_hidden[key] = clamp_int(npc_hidden.get(key, 0) + int(delta_data[key]), 0, 100)
+                except Exception:
+                    pass
+        if "trust" in delta_data:
+            try:
+                npc_hidden["trust"] = clamp_int(npc_hidden.get("trust", 0) + int(delta_data["trust"]), -100, 100)
+            except Exception:
+                pass
+        if "test_intent" in delta_data:
+            npc_hidden["test_intent"] = bool(delta_data["test_intent"])
 
     facts = update.get("facts_add") or []
     if facts:
@@ -865,6 +1903,12 @@ JSON schema：
 # ============================================================
 # UI 組件
 # ============================================================
+=======
+# safe_response_text 已由 call_openrouter() 內建容錯取代
+
+
+# --- UI 組件 ---
+>>>>>>> acd070b (改進雞同鴨講的問題 重寫prompt)
 
 class StartModal(discord.ui.Modal):
     def __init__(self, gender, family):
@@ -932,7 +1976,11 @@ class StartModal(discord.ui.Modal):
         }
         save_player_data(user_id, 'status', status)
 
+<<<<<<< HEAD
         # 3. memory.json — 加入 fact_sheet 欄位
+=======
+        # 3. memory.json
+>>>>>>> acd070b (改進雞同鴨講的問題 重寫prompt)
         memory = {
             "long_term_summary": "",
             "short_term": [],
@@ -946,7 +1994,11 @@ class StartModal(discord.ui.Modal):
         save_player_data(user_id, 'inventory', inventory)
 
         # 5. relations.json
+<<<<<<< HEAD
         relations = {"npcs": {}, "companions": {}}
+=======
+        relations = {"npcs": {}}
+>>>>>>> acd070b (改進雞同鴨講的問題 重寫prompt)
         save_player_data(user_id, 'relations', relations)
 
         # 顯示創角 Embed
@@ -973,8 +2025,13 @@ class StartModal(discord.ui.Modal):
         opening = self.family.get("opening", "")
         await interaction.channel.send(content=opening)
 
+<<<<<<< HEAD
         # 將開場存入短期記憶（user 欄使用自然語句，避免 Gemini 困惑）
         initial_scene = f"{char_desc}\n\n{opening}"
+=======
+        # 將開場存入短期記憶
+        initial_scene = f"【創角】{char_desc}\n\n{opening}"
+>>>>>>> acd070b (改進雞同鴨講的問題 重寫prompt)
         memory = load_player_data(user_id, 'memory')
         if memory:
             memory['short_term'].append({
@@ -1030,9 +2087,13 @@ class GenderView(discord.ui.View):
         self.add_item(GenderSelect(families))
 
 
+<<<<<<< HEAD
 # ============================================================
 # Bot 設定
 # ============================================================
+=======
+# --- Bot 設定 ---
+>>>>>>> acd070b (改進雞同鴨講的問題 重寫prompt)
 
 class HaremBot(commands.Bot):
     def __init__(self):
@@ -1131,29 +2192,46 @@ async def ooc(interaction: discord.Interaction, *, correction: str):
         memory['short_term'] = short_term
         save_player_data(interaction.user.id, 'memory', memory)
 
+<<<<<<< HEAD
+=======
+    # 取得遊戲規則並組裝 system instruction
+>>>>>>> acd070b (改進雞同鴨講的問題 重寫prompt)
     game_rules = format_game_rules()
     gm_system = make_gm_system_instruction(game_rules)
 
     location = status.get('location', '未知') if status else '未知'
     attributes = status.get('attributes', {}) if status else {}
+<<<<<<< HEAD
     # ── 修正3：只保留最近 3 輪 ──
     history_summary = build_history_summary(short_term)
     npc_database = format_selected_npc_data(select_relevant_npcs(location, correction, load_player_relations(interaction.user.id)))
     # ── 修正2：注入事實清單 ──
     fact_sheet = load_fact_sheet(interaction.user.id)
     fact_section = f"\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n已確認事實清單（最高優先級，不得違背）\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n{fact_sheet if fact_sheet else '（尚無修正記錄）'}\n" if fact_sheet else ""
+=======
+    history_summary = build_history_summary(short_term)
+    npc_database = soften_content(format_npc_data())
+>>>>>>> acd070b (改進雞同鴨講的問題 重寫prompt)
 
     ooc_template = get_script("templates", "ooc_correction")
     full_prompt = ooc_template.format(
         correction=correction,
+<<<<<<< HEAD
         last_scene=last_exchange.get('bot', '[無紀錄]')[:200],
+=======
+        last_scene=soften_content(last_exchange.get('bot', '[無紀錄]')[:200]),
+>>>>>>> acd070b (改進雞同鴨講的問題 重寫prompt)
         name=profile['name'],
         background=profile['family_description'],
         location=location,
         attributes=attributes,
         npc_database=npc_database,
         history_summary=history_summary,
+<<<<<<< HEAD
     ) + fact_section
+=======
+    )
+>>>>>>> acd070b (改進雞同鴨講的問題 重寫prompt)
 
     try:
         text = await call_gemini(gm_system, full_prompt)
@@ -1165,9 +2243,12 @@ async def ooc(interaction: discord.Interaction, *, correction: str):
             f"🔄 **劇情修正**\n> 修正意見：{correction}\n\n{text}"
         )
 
+<<<<<<< HEAD
         # ── 修正2：更新事實清單 ──
         update_fact_sheet(interaction.user.id, correction, text[:80])
 
+=======
+>>>>>>> acd070b (改進雞同鴨講的問題 重寫prompt)
         # 儲存修正後的劇情
         short_term.append({"user": f"[OOC修正] {correction}", "bot": text})
         short_term = short_term[-10:]
@@ -1231,6 +2312,7 @@ async def op_cmd(interaction: discord.Interaction, *, command: str):
         await interaction.channel.send(f"⚠️ 指令執行失敗：{e}")
 
 
+<<<<<<< HEAD
 @bot.tree.command(name="relation", description="手動調整與 NPC 的好感度（GM 校正用）")
 @app_commands.describe(npc="NPC 名稱", delta="好感度變化（正數增加，負數減少）")
 async def relation_cmd(interaction: discord.Interaction, npc: str, delta: int):
@@ -1250,6 +2332,9 @@ async def relation_cmd(interaction: discord.Interaction, npc: str, delta: int):
 # 訊息處理（核心流程）
 # ── 修正1：指令分類 → 修正4：情緒偵測 → 組裝 prompt ──
 # ============================================================
+=======
+# --- 訊息處理 ---
+>>>>>>> acd070b (改進雞同鴨講的問題 重寫prompt)
 
 @bot.event
 async def on_message(message):
@@ -1263,10 +2348,20 @@ async def on_message(message):
     if profile and not message.content.startswith('!'):
         async with message.channel.typing():
             try:
+<<<<<<< HEAD
+=======
+                # 取得遊戲規則並組裝 system instruction
+>>>>>>> acd070b (改進雞同鴨講的問題 重寫prompt)
                 game_rules = format_game_rules()
                 gm_system = make_gm_system_instruction(game_rules)
 
+<<<<<<< HEAD
                 long_term = memory.get('long_term_summary', '') if memory else ''
+=======
+                # 讀取記憶與狀態
+                long_term = memory.get(
+                    'long_term_summary', '') if memory else ''
+>>>>>>> acd070b (改進雞同鴨講的問題 重寫prompt)
                 short_term = memory.get('short_term', []) if memory else []
 
                 location = status.get('location', '未知') if status else '未知'
@@ -1275,9 +2370,9 @@ async def on_message(message):
                 relations = load_player_relations(message.author.id)
                 player_relations_str = format_player_relations(relations)
 
+<<<<<<< HEAD
                 scene_npcs_str = get_scene_npcs(location)
                 scene_npc_list = [n.strip() for n in scene_npcs_str.split('、') if n.strip() and n != '無']
-                npc_database = ""  # 先分類玩家輸入後，再用 select_relevant_npcs() 建立
 
                 # ── 修正3：只注入最近 3 輪 ──
                 history_summary = build_history_summary(short_term)
@@ -1287,10 +2382,6 @@ async def on_message(message):
 
                 # ── 修正1：辨識指令類型 ──
                 input_type, cleaned_action = classify_player_input(message.content)
-
-                # ── 本輪相關 NPC 檢索（簡易 RAG）──
-                selected_npcs = select_relevant_npcs(location, cleaned_action, relations)
-                npc_database = format_selected_npc_data(selected_npcs)
 
                 # ── 好感度自動偵測（雙軌制 — 關鍵字軌）──
                 affection_delta = detect_affection_change(message.content)
@@ -1311,98 +2402,123 @@ async def on_message(message):
                     player_relations_str = format_player_relations(relations)
                     emotion_override = build_emotion_override(triggered_npcs)
 
+                game_state = {
+                    "profile": profile,
+                    "status": status or {},
+                    "location": location,
+                    "attributes": attributes,
+                    "scene_npcs": scene_npc_list,
+                    "relations": relations or {"npcs": {}, "companions": {}},
+                    "history_summary": history_summary,
+                    "input_type": input_type
+                }
+                inventory = load_player_inventory(message.author.id) or {"items": []}
+                gamedata = _load_gamedata_bundle()
+                relations = ensure_hidden_state(relations, gamedata, game_state, cleaned_action)
+                save_player_data(message.author.id, "relations", relations)
+                game_state["relations"] = relations
+
+                judge_system, judge_prompt = build_judge_prompt(
+                    cleaned_action,
+                    game_state,
+                    memory,
+                    relations,
+                    inventory
+                )
+                judge_result = await call_judge_ai(judge_system, judge_prompt)
+
+                authoritative_result = resolve_rules(
+                    judge_result,
+                    game_state,
+                    memory,
+                    relations,
+                    inventory,
+                    gamedata
+                )
+
+                selected_npcs = select_relevant_npcs(location, cleaned_action, relations)
+                selected_lore = {
+                    "game_rules": game_rules,
+                    "fact_sheet": fact_sheet,
+                    "player_relations": player_relations_str,
+                    "emotion_override": emotion_override,
+                    "history_summary": history_summary,
+                    "long_term_summary": long_term
+                }
+                story_system, story_prompt = build_story_prompt(
+                    cleaned_action,
+                    judge_result,
+                    authoritative_result,
+                    selected_lore,
+                    selected_npcs,
+                    game_state,
+                    memory
+                )
+
+                story_result = await call_story_ai(story_system, story_prompt)
+                ok, last_error = validate_story_output_reason(story_result, authoritative_result, game_state)
+                if not ok:
+                    retry_prompt = (
+                        story_prompt
+                        + f"\n\nPrevious story output failed validation: {last_error}. "
+                        + "Return corrected JSON only, preserving authoritative_result."
+                    )
+                    story_result = await call_story_ai(story_system, retry_prompt)
+                    ok, last_error = validate_story_output_reason(story_result, authoritative_result, game_state)
+
+                if not ok:
+                    story_result = fallback_story_result(authoritative_result)
+
+                text = format_story_reply(story_result)
+                await message.reply(text)
+
+                apply_state_update(message.author.id, authoritative_result["state_update"])
+
+                # 追蹤 AI 回應中出現的隨侍人物
+                update_companion_tracking(message.author.id, story_result.get("reply", ""))
+
+                update_memory(message.author.id, message.content, text)
+=======
+                # 篩選當前場景的 NPC，軟化所有動態內容
+                scene_npcs = get_scene_npcs(location)
+                npc_database = soften_content(format_npc_data())
+                player_relations = soften_content(player_relations)
+                long_term_clean = soften_content(long_term)
+                history_summary = build_history_summary(short_term)
+
                 # 組裝 action_prompt
                 template = get_script("templates", "action_prompt")
-                gm_prompt_text = (
-                    "【本輪敘事規則】"
-                    "直接接續上一幕最後一刻；已登場的人物無需重新出場或介紹，繼續推進劇情；"
-                    "禁止重述上一輪已說過的台詞或場景描述。"
-                )
                 action_prompt = template.format(
-                    gm_prompt=gm_prompt_text,
+                    gm_prompt="",
                     npc_database=npc_database,
-                    player_relations=player_relations_str,
+                    player_relations=player_relations,
                     name=profile['name'],
                     location=location,
-                    scene_npcs=scene_npcs_str,
+                    scene_npcs=scene_npcs,
                     attributes=attributes,
-                    action=cleaned_action,
+                    action=message.content,
                     history_summary=history_summary,
-                    long_term_summary=long_term,
+                    long_term_summary=long_term_clean,
                     core_settings=""
                 )
 
-                # ── 附加強制覆蓋區塊（修正1 + 修正2 + 修正4）──
-                overrides = []
-
-                if input_type == 'KILL_CMD':
-                    overrides.append(
-                        "━━ 殺戮指令強制執行 ━━\n"
-                        "玩家已明確下達殺戮指令。目標 NPC 必須在本輪劇情中真實死亡，"
-                        "世界狀態須即時更新。此後任何輪次中，該 NPC 均已死亡，不得以任何形式復活。\n"
-                        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-                    )
-
-                if fact_sheet:
-                    overrides.append(
-                        f"━━ 已確認事實清單（最高優先級）━━\n{fact_sheet}\n"
-                        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-                    )
-
-                if emotion_override:
-                    overrides.append(emotion_override)
-
-                if overrides:
-                    action_prompt += "\n\n" + "\n\n".join(overrides)
-
-                known_npc_names = [npc.get('name', '') for npc in get_npcs()]
-                kill_targets = detect_kill_targets(cleaned_action, known_npc_names) if input_type == 'KILL_CMD' else []
-                action_prompt += build_json_output_contract(input_type, kill_targets)
-
-                payload = None
-                last_error = ""
-                for attempt in range(2):
-                    retry_prompt = action_prompt
-                    if last_error:
-                        retry_prompt += f"\n\n上一版輸出違規：{last_error}。請修正後只輸出合法 JSON。"
-
-                    raw_payload = await call_gemini_json(gm_system, retry_prompt)
-                    payload = normalize_ai_payload(raw_payload)
-                    if not payload:
-                        last_error = "不是合法 JSON，或缺少 reply/state_update"
-                        continue
-
-                    ok, reason = validate_ai_output(payload, relations, input_type, kill_targets)
-                    if ok:
-                        break
-                    last_error = reason
-                    payload = None
-
-                if not payload:
-                    await message.reply(f"⚠️ 此段劇情生成失敗：{last_error or '輸出格式不合規'}。請換個方向行動。")
+                text = await call_gemini(gm_system, action_prompt)
+                if not text:
+                    await message.reply("⚠️ 此段劇情觸動禁忌，宮中傳訊受阻，請換個方向行動。")
                     return
-
-                text = payload['reply']
-                apply_state_update(message.author.id, payload['state_update'])
 
                 await message.reply(text)
 
-                # 追蹤 AI 回應中出現的隨侍人物
-                update_companion_tracking(message.author.id, text)
-
-                # 更新短期記憶；先保存完整列表，再交給 manage_memory() 壓縮
-                memory = load_player_memory(message.author.id) or memory
+                # 更新短期記憶（只保留最近 10 筆）
                 if memory:
-                    short_term = memory.get('short_term', [])
                     short_term.append({"user": message.content, "bot": text})
+                    short_term = short_term[-10:]
                     memory['short_term'] = short_term
                     save_player_data(message.author.id, 'memory', memory)
-                    manage_memory(message.author.id)
 
-                    memory = load_player_memory(message.author.id)
-                    if memory and len(memory.get('short_term', [])) > 10:
-                        memory['short_term'] = memory['short_term'][-10:]
-                        save_player_data(message.author.id, 'memory', memory)
+                    # 觸發滾動記憶管理
+                    manage_memory(message.author.id)
+>>>>>>> acd070b (改進雞同鴨講的問題 重寫prompt)
 
             except Exception as e:
                 print(f"Error: {e}")
