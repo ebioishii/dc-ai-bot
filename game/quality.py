@@ -72,6 +72,53 @@ def normalized_similarity(left: str, right: str) -> float:
     return SequenceMatcher(None, left_norm, right_norm).ratio()
 
 
+def recent_bot_replies(memory_or_turns, *, limit: int = 6) -> list[str]:
+    if isinstance(memory_or_turns, dict):
+        turns = memory_or_turns.get("short_term", [])
+    else:
+        turns = memory_or_turns
+    if not isinstance(turns, list):
+        return []
+    replies = []
+    for turn in turns[-limit:]:
+        if not isinstance(turn, dict):
+            continue
+        bot = sanitize_player_visible_text(turn.get("bot", ""))
+        if bot:
+            replies.append(bot)
+    return replies
+
+
+def duplicate_against_recent(
+    reply: str,
+    memory_or_turns=None,
+    *,
+    extra_replies: list[str] | None = None,
+    threshold: float = 0.90,
+    limit: int = 6,
+) -> dict:
+    text = sanitize_player_visible_text(reply)
+    if not text:
+        return {"duplicate": False, "similarity": 0.0, "matched_reply": ""}
+    candidates = recent_bot_replies(memory_or_turns or [], limit=limit)
+    candidates.extend(str(item or "") for item in (extra_replies or []))
+    best_similarity = 0.0
+    best_reply = ""
+    for candidate in candidates:
+        candidate = sanitize_player_visible_text(candidate)
+        if not candidate:
+            continue
+        similarity = normalized_similarity(text, candidate)
+        if similarity > best_similarity:
+            best_similarity = similarity
+            best_reply = candidate
+    return {
+        "duplicate": best_similarity >= threshold,
+        "similarity": best_similarity,
+        "matched_reply": best_reply,
+    }
+
+
 def inspect_story_quality(reply: str, *, previous_reply: str = "", max_chars: int = 600, min_chars: int = 0) -> dict:
     raw = str(reply or "")
     sanitized = sanitize_player_visible_text(raw)

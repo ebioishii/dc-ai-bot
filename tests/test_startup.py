@@ -2,13 +2,17 @@ import json
 from pathlib import Path
 
 from game.startup import (
+    FORBIDDEN_BACKGROUND_TERMS,
     RANDOM_FAMILY_VALUE,
+    build_background_prompt,
+    build_fallback_background_description,
     build_opening_story_result,
     build_starting_objectives,
     build_starting_relations,
     generate_random_appearance,
     resolve_start_family,
     resolve_start_location,
+    sanitize_background_description,
 )
 from game.npc import get_present_scene_npcs
 
@@ -180,3 +184,43 @@ def test_opening_story_has_valid_choices_and_no_major_event_terms():
                 assert choice.get("effect_hint")
                 assert isinstance(choice.get("mechanical_effect"), dict)
             assert not any(term in story["reply"] for term in forbidden)
+
+
+def test_background_prompt_and_sanitizer_do_not_create_starting_event_contradictions():
+    families = _load_json("families.json")["families"]
+    locations = _load_json("locations.json")["locations"]
+    poor = next(family for family in families if family["id"] == "poor")
+    location = resolve_start_location(poor, locations)
+    profile = {
+        "name": "測試宮女",
+        "gender": "女",
+        "rank": poor["rank"],
+        "appearance": "眉眼清亮，衣衫素淨",
+    }
+
+    system, user = build_background_prompt(profile, poor, location)
+    prompt_text = system + "\n" + user
+    assert "不得寫皇帝已經注意" in prompt_text
+    assert "目前位階：宮女" in prompt_text
+    assert "起始位置：景仁宮值房" in prompt_text
+
+    unsafe = "測試宮女生於罪臣之家，因緣際會下被皇帝看中，從此命運轉動，走向宮廷深處。"
+    sanitized = sanitize_background_description(unsafe, profile, poor, location)
+
+    assert "宮女身份" in sanitized
+    assert "景仁宮值房" in sanitized
+    assert not any(term in sanitized for term in FORBIDDEN_BACKGROUND_TERMS)
+    assert "皇帝" not in poor["description"]
+
+
+def test_fallback_background_respects_rank_and_location():
+    family = {"name": "罪臣之家", "description": "家族因罪沒落", "rank": "宮女"}
+    profile = {"name": "林常在", "rank": "宮女", "appearance": "舉止謹慎"}
+    location = {"name": "景仁宮", "room": "值房"}
+
+    text = build_fallback_background_description(profile, family, location)
+
+    assert "宮女身份" in text
+    assert "景仁宮值房" in text
+    assert "常在之身" not in text
+    assert "皇帝" not in text

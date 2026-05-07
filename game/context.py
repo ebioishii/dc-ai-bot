@@ -12,7 +12,10 @@ SCENE_SUMMARY_MAX_CHARS = 600
 
 DEFAULT_SCENE_STATE = {
     "location": "",
+    "phase": "normal",
     "present_npcs": [],
+    "audience_target": "",
+    "pending_audience_request": False,
     "player_posture": "",
     "visible_player_action": "",
     "npc_mood": {},
@@ -82,6 +85,9 @@ def normalize_scene_state(
 
     explicit = set(state.get("explicit_present_npcs", []) or [])
     npcs = [str(name).strip() for name in (scene_npcs or state.get("present_npcs") or []) if str(name).strip()]
+    crowd_terms = ("周圍", "眾人", "在場", "大家", "宮人", "宮女太監")
+    if any(term in str(player_input or "") for term in crowd_terms) and "其他宮人" not in npcs:
+        npcs.append("其他宮人")
     state["present_npcs"] = list(dict.fromkeys(npcs))[:8]
     state["visible_player_action"] = str(player_input).strip()[:160]
 
@@ -117,6 +123,19 @@ def normalize_scene_state(
 
     update = (authoritative_result or {}).get("state_update", {}) if isinstance(authoritative_result, dict) else {}
     if isinstance(update, dict):
+        status_set = update.get("status_set", {}) if isinstance(update.get("status_set"), dict) else {}
+        if status_set.get("pending_audience_request") or status.get("pending_audience_request"):
+            target = str(status_set.get("audience_target") or status.get("audience_target") or state.get("audience_target") or "主位娘娘").strip()
+            state["phase"] = "audience_request"
+            state["pending_audience_request"] = True
+            state["audience_target"] = target
+            state["present_npcs"] = [name for name in state["present_npcs"] if name != target]
+            if "通報宮人" not in state["present_npcs"]:
+                state["present_npcs"].append("通報宮人")
+            state["unresolved_hooks"] = _dedupe_keep_tail(
+                (state.get("unresolved_hooks") or []) + [f"已請求通報{target}，尚未獲准入見。"],
+                12,
+            )
         state["relationship_delta"] = update.get("relations_delta", {}) if isinstance(update.get("relations_delta"), dict) else {}
         facts = [str(item).strip()[:120] for item in update.get("facts_add", []) if str(item).strip()]
         if facts:

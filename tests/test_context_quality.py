@@ -3,6 +3,7 @@ import json
 from game.context import (
     build_model_context,
     compact_memory_window,
+    normalize_scene_state,
     output_length_policy,
 )
 from game.formatting import format_story_reply
@@ -16,6 +17,7 @@ from game.ooc import (
 from game.performance import log_reply_performance
 from game.quality import (
     chinese_char_count,
+    duplicate_against_recent,
     finalize_story_result,
     inspect_story_quality,
     natural_next_step_hint,
@@ -120,6 +122,30 @@ def test_duplicate_reply_recommends_single_retry_trigger():
 
     assert quality["duplicate"] is True
     assert quality["retry_recommended"] is True
+
+
+def test_duplicate_detection_checks_recent_replies_not_only_previous():
+    memory = {
+        "short_term": [
+            {"user": "a", "bot": "晴蘭沉默地看著你，沒有立刻回答。"},
+            {"user": "b", "bot": "宮人低頭整理茶盞，殿內一時安靜。"},
+            {"user": "c", "bot": "你把話說出口，晴蘭臉色微白，旁人也都聽見了。"},
+        ]
+    }
+
+    duplicate = duplicate_against_recent(
+        "你把話說出口，晴蘭臉色微白，旁人也都聽見了。",
+        memory,
+        threshold=0.94,
+    )
+    fresh = duplicate_against_recent(
+        "晴蘭先看向旁邊的宮人，才壓低聲音說此事不能在廊下談。",
+        memory,
+        threshold=0.94,
+    )
+
+    assert duplicate["duplicate"] is True
+    assert fresh["duplicate"] is False
 
 
 def test_performance_log_contains_duration_and_token_estimates(capsys):
@@ -254,6 +280,23 @@ def test_story_without_choices_rejects_action_menu_and_unruled_gift():
     assert ok is True
 
 
+def test_story_without_choices_rejects_meta_next_step_and_inner_control():
+    cases = (
+        ("玩家行動完成，局勢略有推進。", "meta"),
+        ("接下來，你將如何引導這場對話，是選擇溫和探尋，還是直接施壓？", "choices"),
+        ("你決定將此時的局面定格，讓她承受壓力。", "inner"),
+    )
+    for reply, expected in cases:
+        ok, reason = validate_story_output_reason(
+            {"reply": reply, "choices": []},
+            {"state_update": {}},
+            {},
+            choices_required=False,
+        )
+        assert ok is False
+        assert expected in reason
+
+
 def test_hint_formatter_shows_objectives_and_last_hints():
     status = {
         "location_name": "承乾宮",
@@ -300,6 +343,26 @@ def test_hint_choices_follow_paper_context():
     assert "點心" not in joined
 
 
+def test_hint_choices_follow_public_pressure_context():
+    choices = plan_strategic_choices(
+        {
+            "player_intent": "大聲質問晴蘭是不是有人指使她，並說要去慎行司告發",
+            "action_type": "pressure",
+            "mentioned_npcs": ["晴蘭"],
+        },
+        {},
+        {"status": {}, "scene_npcs": ["晴蘭", "其他宮人"]},
+        {"npcs": {"晴蘭": {"alive": True}}},
+        {"npcs": [{"name": "晴蘭"}]},
+        [{"id": "main", "text": "查清景仁宮局勢", "status": "active", "progress": 0}],
+    )
+    joined = "\n".join(choice["text"] for choice in choices)
+
+    assert "慎行司" in joined or "主位娘娘" in joined or "管事" in joined
+    assert "家常話" not in joined
+    assert "給晴蘭留一個能接也能退的台階" not in joined
+
+
 def test_food_social_action_updates_relation_state():
     result = evaluate_player_action_costs(
         {"player_intent": "請陸常在吃異國點心，自己先吃一塊證明無毒", "action_type": "social", "mentioned_npcs": ["陸常在"]},
@@ -344,6 +407,146 @@ def test_model_context_prefers_status_scene_state_over_memory_cache():
     assert context["scene_state"]["present_npcs"] == ["Status NPC"]
 
 
+def test_scene_state_tracks_crowd_when_player_addresses_witnesses():
+    scene = normalize_scene_state(
+        {"location": "景仁宮", "present_npcs": ["晴蘭"]},
+        status={"location_name": "景仁宮"},
+        scene_npcs=["晴蘭"],
+        player_input="讓周圍的人清楚聽見自己的質問，請在場眾人作證",
+    )
+
+    assert "晴蘭" in scene["present_npcs"]
+    assert "其他宮人" in scene["present_npcs"]
+
+
+def test_scene_state_keeps_high_rank_audience_as_pending_gate():
+    scene = normalize_scene_state(
+        {"location": "景仁宮", "present_npcs": ["晴蘭"]},
+        status={"location_name": "景仁宮"},
+        scene_npcs=["晴蘭"],
+        player_input="請求通報陳貴妃，告發晴蘭合謀",
+        authoritative_result={
+            "state_update": {
+                "status_set": {
+                    "pending_audience_request": True,
+                    "audience_target": "陳貴妃",
+                }
+            }
+        },
+    )
+
+    assert scene["phase"] == "audience_request"
+    assert scene["pending_audience_request"] is True
+    assert scene["audience_target"] == "陳貴妃"
+    assert "陳貴妃" not in scene["present_npcs"]
+    assert "通報宮人" in scene["present_npcs"]
+
+
+def test_validation_rejects_auto_granted_high_rank_audience():
+    ok, reason = validate_story_output_reason(
+        {
+            "reply": "陳貴妃緩緩抬眼，聲音平靜地說道：「既然妳有話要稟報，本宮在此聽著。」",
+            "choices": [],
+        },
+        {
+            "denied_assumptions": ["high-rank audience is automatically granted"],
+            "state_update": {"status_set": {"audience_target": "陳貴妃"}},
+        },
+        {"scene_state": {"visible_player_action": "請求通報陳貴妃"}, "scene_npcs": ["晴蘭"]},
+        choices_required=False,
+    )
+
+    assert ok is False
+    assert "audience" in reason
+
+
+def test_validation_rejects_social_turn_that_only_restates_player_dialogue():
+    ok, reason = validate_story_output_reason(
+        {
+            "reply": "你輕聲說道：「今日天氣不錯，倒讓我想起家鄉的風了。」你刻意放緩語速，為彼此留下能接也能退的餘地。",
+            "choices": [],
+        },
+        {
+            "relevant_npcs": ["晴蘭"],
+            "state_update": {"last_turn_type": "social"},
+        },
+        {"scene_state": {"visible_player_action": "跟晴蘭寒暄"}, "scene_npcs": ["晴蘭"]},
+        choices_required=False,
+    )
+
+    assert ok is False
+    assert "NPC response" in reason
+
+
+def test_validation_rejects_story_contradicting_declared_action():
+    ok, reason = validate_story_output_reason(
+        {
+            "reply": "你沒有直接與她們搭話，而是繼續專注於手中的工作。",
+            "choices": [],
+        },
+        {"state_update": {"last_turn_type": "social"}},
+        {"scene_state": {"visible_player_action": "跟晴蘭以外的宮人搭話"}, "scene_npcs": ["其他宮人"]},
+        choices_required=False,
+    )
+
+    assert ok is False
+    assert "contradicts" in reason
+
+
+def test_validation_rejects_repeated_npc_reaction_template():
+    ok, reason = validate_story_output_reason(
+        {
+            "reply": "晴蘭臉色蒼白，眼神閃爍，緊咬下唇，低聲道：「有些事情不是妳想的那樣。」",
+            "choices": [],
+        },
+        {"state_update": {"last_turn_type": "ask"}},
+        {"scene_state": {"visible_player_action": "詢問晴蘭"}, "scene_npcs": ["晴蘭"]},
+        choices_required=False,
+    )
+
+    assert ok is False
+    assert "reaction template" in reason
+
+
+def test_validation_rejects_unjustified_initial_hostility():
+    ok, reason = validate_story_output_reason(
+        {
+            "reply": "晴蘭聞言抬眼看你，神色不悅，語氣也疏離了些：「原來是新來的。」",
+            "choices": [],
+        },
+        {"state_update": {"last_turn_type": "social"}},
+        {
+            "status": {"turn_count": 1},
+            "scene_state": {"visible_player_action": "向晴蘭打招呼，做簡單的自我介紹"},
+            "scene_npcs": ["晴蘭"],
+            "relations": {"npcs": {"晴蘭": {"好感度": 0, "狀態": "初識", "emotion_state": {"anger": 0}}}},
+        },
+        choices_required=False,
+    )
+
+    assert ok is False
+    assert "hostility" in reason
+
+
+def test_validation_allows_initial_polite_reservation():
+    ok, reason = validate_story_output_reason(
+        {
+            "reply": "晴蘭聞言停下手裡的活，先向旁邊宮人讓了半步，才照規矩回了一禮：「姑娘初來，值房裡多是瑣事，慢慢熟便是。」",
+            "choices": [],
+        },
+        {"state_update": {"last_turn_type": "social"}},
+        {
+            "status": {"turn_count": 1},
+            "scene_state": {"visible_player_action": "向晴蘭打招呼，做簡單的自我介紹"},
+            "scene_npcs": ["晴蘭"],
+            "relations": {"npcs": {"晴蘭": {"好感度": 0, "狀態": "初識", "emotion_state": {"anger": 0}}}},
+        },
+        choices_required=False,
+    )
+
+    assert ok is True, reason
+
+
 def test_ooc_extracts_target_action_without_recording_generic_rewrite_as_fact():
     correction = "你沒有描寫劇情，我的行動是「詢問婉貴人：姊姊看著很困擾，是跟襄嬪娘娘有什麼糾紛嗎」，以此重新生成一次"
     last_exchange = {"user": "原本行動", "bot": "錯誤 fallback"}
@@ -355,6 +558,7 @@ def test_ooc_extracts_target_action_without_recording_generic_rewrite_as_fact():
 
 def test_ooc_rewrite_rejects_new_arrival_and_repeated_setup():
     assert ooc_rewrite_problem("殿外傳來急促的腳步聲，襄嬪娘娘駕到。") == "rewrite invented a new arrival/interruption/event"
+    assert ooc_rewrite_problem("這表明她並非全然屈服，玩家接下來需要決定如何行動。") == "story included meta/system phrasing"
     assert ooc_rewrite_problem(
         "長春宮偏殿窗下香灰尚新，案上只擺著內務府按例送來的器物。",
         previous_valid_reply="長春宮偏殿窗下香灰尚新，案上只擺著內務府按例送來的器物。",

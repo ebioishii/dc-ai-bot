@@ -1,5 +1,6 @@
 import os
 import asyncio
+from collections import deque
 import discord
 from discord import app_commands
 from discord.ext import commands
@@ -27,7 +28,8 @@ from game.ooc import (
 )
 from game.performance import elapsed_ms, estimate_tokens, log_reply_performance, now_ms
 from game.quality import (
-    finalize_story_result, inspect_story_quality, sanitize_player_visible_text,
+    duplicate_against_recent, finalize_story_result, inspect_story_quality,
+    sanitize_player_visible_text,
 )
 from game.npc import (
     select_relevant_npcs, format_selected_npc_data, get_scene_npcs, get_present_scene_npcs,
@@ -36,7 +38,7 @@ from game.npc import (
     ensure_hidden_state,
 )
 from game.formatting import _affection_tier, format_player_relations, format_game_rules, format_story_reply
-from game.rules import classify_player_input, resolve_rules
+from game.rules import classify_player_input, resolve_rules, plan_strategic_choices
 from game.judge import build_judge_prompt, call_judge_ai
 from game.story import (
     make_gm_system_instruction, build_story_prompt, call_story_ai,
@@ -46,7 +48,8 @@ from game.validation import validate_story_output_reason
 from game.startup import (
     RANDOM_FAMILY_VALUE, build_opening_story_result, format_location_display,
     build_starting_objectives, build_starting_relations,
-    generate_random_appearance, resolve_start_family, resolve_start_location,
+    build_background_prompt, generate_random_appearance, resolve_start_family,
+    resolve_start_location, sanitize_background_description,
 )
 
 load_dotenv()
@@ -178,13 +181,10 @@ class StartModal(discord.ui.Modal):
             self.family["disadvantages"]), inline=False)
         await interaction.followup.send(embed=embed, ephemeral=True)
 
-        # 生成角色背景描述
-        bg_system = "你是一位清宮小說家，請根據玩家資料生成一段一百五十字以內、古風、沉浸感強的角色背景描述，以第三人稱敘述，不要有任何 AI 或機器人語氣。"
-        bg_user = (
-            f"名諱：{name}\n性別：{self.gender}\n"
-            f"家世：{self.family['name']}，{self.family['description']}\n外貌：{appearance}"
-        )
-        char_desc = await call_gemini(bg_system, bg_user, model=BASE_MODEL, max_tokens=300) or "（角色描述生成失敗）"
+        # 生成角色背景描述，並防止模型把未發生的寵幸或位分變化寫進開局。
+        bg_system, bg_user = build_background_prompt(profile, self.family, start_location)
+        raw_char_desc = await call_gemini(bg_system, bg_user, model=BASE_MODEL, max_tokens=300)
+        char_desc = sanitize_background_description(raw_char_desc or "", profile, self.family, start_location)
 
         await interaction.channel.send(f"**身分背景**\n\n{char_desc}")
 
@@ -358,6 +358,54 @@ async def objectives(interaction: discord.Interaction):
     await interaction.response.send_message(text)
 
 
+def refresh_status_hints(user_id, status: dict, memory: dict | None = None) -> dict:
+    """Rebuild /hint suggestions from the latest stored scene instead of stale last_hints."""
+    status = normalize_status_record(status or {})
+    memory = memory or {}
+    relations = load_player_relations(user_id) or {"npcs": {}, "hidden_state": {}}
+    gamedata = _load_gamedata_bundle()
+    profile = load_player_profile(user_id) or {}
+    short_term = memory.get("short_term", []) if isinstance(memory, dict) else []
+    last_action = ""
+    if isinstance(short_term, list) and short_term:
+        last_action = str((short_term[-1] or {}).get("user", "")).strip()
+    scene_state = status.get("scene_state", {}) if isinstance(status.get("scene_state"), dict) else {}
+    location = scene_state.get("location") or status.get("location_name") or status.get("location") or ""
+    present_npcs = scene_state.get("present_npcs") if isinstance(scene_state.get("present_npcs"), list) else []
+    if not present_npcs:
+        present_npcs = get_present_scene_npcs(location, profile=profile, status=status, player_input=last_action)
+    crowd_terms = ("周圍", "眾人", "在場", "大家", "宮人", "宮女太監")
+    if any(term in last_action for term in crowd_terms) and "其他宮人" not in present_npcs:
+        present_npcs = list(present_npcs) + ["其他宮人"]
+    input_type, cleaned_action = classify_player_input(last_action or scene_state.get("visible_player_action", "觀察局勢"))
+    judge_result = {
+        "action_type": input_type,
+        "player_intent": cleaned_action,
+        "intent": cleaned_action,
+        "mentioned_npcs": [name for name in present_npcs if name != "其他宮人"],
+    }
+    game_state = {
+        "status": status,
+        "scene_npcs": present_npcs,
+        "relations": relations,
+        "scene_state": scene_state,
+    }
+    hints = plan_strategic_choices(
+        judge_result,
+        {},
+        game_state,
+        relations,
+        gamedata,
+        status.get("current_objectives", []),
+    )
+    scene_state = dict(scene_state)
+    scene_state["location"] = location
+    scene_state["present_npcs"] = list(dict.fromkeys(str(name).strip() for name in present_npcs if str(name).strip()))
+    status["scene_state"] = scene_state
+    status["last_hints"] = compact_hints_for_status(hints)
+    return status
+
+
 @bot.tree.command(name="hint", description="查看目前短期目標與建議行動")
 async def hint(interaction: discord.Interaction):
     status = load_player_status(interaction.user.id)
@@ -365,6 +413,7 @@ async def hint(interaction: discord.Interaction):
     if not status:
         await interaction.response.send_message("尚未建立角色，請先使用 /start。", ephemeral=True)
         return
+    status = refresh_status_hints(interaction.user.id, status, memory)
     text = format_hint_reply(status, memory, include_hints=True)
     save_player_data(interaction.user.id, "status", normalize_status_record(status))
     save_player_data(interaction.user.id, "memory", normalize_memory_record(memory, status))
@@ -424,6 +473,14 @@ async def ooc(interaction: discord.Interaction, *, correction: str):
 
         text = sanitize_player_visible_text(text)
         problem = ooc_rewrite_problem(text, previous_valid_reply=previous_valid_reply)
+        duplicate = duplicate_against_recent(
+            text,
+            short_term,
+            extra_replies=[last_exchange.get("bot", ""), previous_valid_reply],
+            threshold=0.90,
+        )
+        if duplicate["duplicate"] and not problem:
+            problem = "rewrite repeated recent bot reply"
         if problem:
             retry_prompt = (
                 ooc_prompt
@@ -433,8 +490,16 @@ async def ooc(interaction: discord.Interaction, *, correction: str):
             data = await call_gemini_json(ooc_system, retry_prompt, temperature=0.45, max_tokens=700)
             text = sanitize_player_visible_text(data.get("reply", "") if isinstance(data, dict) else "")
             problem = ooc_rewrite_problem(text, previous_valid_reply=previous_valid_reply)
+            duplicate = duplicate_against_recent(
+                text,
+                short_term,
+                extra_replies=[last_exchange.get("bot", ""), previous_valid_reply],
+                threshold=0.90,
+            )
+            if duplicate["duplicate"] and not problem:
+                problem = "rewrite repeated recent bot reply"
         if problem:
-            text = "你按下方才失準的敘述，重新把注意力放回眼前。長春宮偏殿的陳設與宮人反應仍有可察之處，在場之人也仍按原本的禮數應對；這一幕暫不新增傳喚、闖入或突發變故。"
+            text = "這次修正只保留上一個行動已經成立的部分：眼前局面沒有新增傳喚、闖入或突發變故。旁人的反應仍停在方才那一刻，真正能推進的，是你接下來如何處理已被看見的言行。"
 
         story_result, _ = finalize_story_result(
             {"reply": text, "choices": []},
@@ -442,6 +507,14 @@ async def ooc(interaction: discord.Interaction, *, correction: str):
             length_policy={"max_chars": 380},
         )
         text = story_result.get("reply", text)
+        duplicate = duplicate_against_recent(
+            text,
+            short_term,
+            extra_replies=[last_exchange.get("bot", ""), previous_valid_reply],
+            threshold=0.94,
+        )
+        if duplicate["duplicate"]:
+            text = "修正輸出與近期劇情過於相近，已改以保守版本收束：上一幕只視為行動已發生，沒有額外新增人物入場、傳喚或定罪結果。"
         await interaction.followup.send("已記錄修正，玩家頻道只會顯示修正後劇情。", ephemeral=True)
         await interaction.channel.send(text)
 
@@ -449,7 +522,8 @@ async def ooc(interaction: discord.Interaction, *, correction: str):
             update_fact_sheet(interaction.user.id, correction, text[:80])
 
         # 儲存修正後的劇情
-        short_term.append({"user": target_action, "bot": text})
+        if not duplicate_against_recent(text, short_term, threshold=0.96, limit=4)["duplicate"]:
+            short_term.append({"user": target_action, "bot": text})
         short_term = short_term[-10:]
         if memory:
             memory['short_term'] = short_term
@@ -534,6 +608,8 @@ async def relation_cmd(interaction: discord.Interaction, npc: str, delta: int):
 
 CHANNEL_QUEUES: dict[int, asyncio.Queue] = {}
 CHANNEL_WORKERS: dict[int, asyncio.Task] = {}
+PROCESSED_MESSAGE_IDS: set[int] = set()
+PROCESSED_MESSAGE_ORDER = deque()
 
 
 @bot.event
@@ -557,6 +633,14 @@ async def on_message(message):
 
 
 def queue_player_message(message):
+    message_id = int(message.id)
+    if message_id in PROCESSED_MESSAGE_IDS:
+        return
+    PROCESSED_MESSAGE_IDS.add(message_id)
+    PROCESSED_MESSAGE_ORDER.append(message_id)
+    while len(PROCESSED_MESSAGE_ORDER) > 500:
+        old_id = PROCESSED_MESSAGE_ORDER.popleft()
+        PROCESSED_MESSAGE_IDS.discard(old_id)
     channel_id = int(message.channel.id)
     queue = CHANNEL_QUEUES.setdefault(channel_id, asyncio.Queue())
     queue.put_nowait(message)
@@ -750,16 +834,27 @@ async def handle_player_message(message):
             max_chars=length_policy["max_chars"],
             min_chars=length_policy.get("min_chars", 0),
         )
+        recent_duplicate = duplicate_against_recent(
+            story_result.get("reply", ""),
+            memory,
+            threshold=0.90,
+            limit=6,
+        )
+        if recent_duplicate["duplicate"]:
+            quality["retry_recommended"] = True
+            quality["duplicate"] = True
 
         if (not ok or quality["retry_recommended"]) and retry_count < 1:
             retry_count += 1
-            retry_reason = last_error if not ok else "local_quality_check_failed"
+            retry_reason = last_error if not ok else (
+                "recent_duplicate_reply" if recent_duplicate["duplicate"] else "local_quality_check_failed"
+            )
             retry_prompt = (
                 story_prompt
                 + f"\n\nPrevious output failed: {retry_reason}. "
                 + "Return corrected JSON only. Keep authoritative_result unchanged. "
                 + f"Reply MUST be at least {length_policy.get('min_chars', 220)} Chinese chars and within {length_policy['max_chars']} Chinese chars. "
-                + "No debug labels, no player inner thoughts, no repeated wording."
+                + "No debug labels, no player inner thoughts, no repeated wording. Do not reuse any sentence from recent_turns."
             )
             input_tokens_est += estimate_tokens(retry_prompt)
             call_start = now_ms()
@@ -771,6 +866,12 @@ async def handle_player_message(message):
                 authoritative_result,
                 game_state,
                 choices_required=offer_choices,
+            )
+            recent_duplicate = duplicate_against_recent(
+                story_result.get("reply", ""),
+                memory,
+                threshold=0.90,
+                limit=6,
             )
 
         if not ok:
@@ -790,6 +891,42 @@ async def handle_player_message(message):
             )
         text = format_story_reply(story_result, show_choices=False, natural_hint="")
         text = sanitize_player_visible_text(text)
+        outbound_duplicate = duplicate_against_recent(text, memory, threshold=0.94, limit=6)
+        if outbound_duplicate["duplicate"] and retry_count < 2:
+            retry_count += 1
+            retry_prompt = (
+                story_prompt
+                + "\n\nFinal local check found this reply duplicated a recent bot reply. "
+                + "Return corrected JSON only. Resolve the latest player action with a fresh visible consequence. "
+                + "Do not reuse prior scene setup, prior sentences, or fallback wording."
+            )
+            input_tokens_est += estimate_tokens(retry_prompt)
+            call_start = now_ms()
+            story_result = await call_story_ai(story_system, retry_prompt)
+            model_duration_ms += elapsed_ms(call_start)
+            story_result = suppress_choices_when_disabled(story_result, offer_choices)
+            ok, last_error = validate_story_output_reason(
+                story_result,
+                authoritative_result,
+                game_state,
+                choices_required=offer_choices,
+            )
+            if ok:
+                story_result, _final_quality = finalize_story_result(
+                    story_result,
+                    previous_reply=previous_reply,
+                    length_policy=length_policy,
+                )
+                text = sanitize_player_visible_text(
+                    format_story_reply(story_result, show_choices=False, natural_hint="")
+                )
+                outbound_duplicate = duplicate_against_recent(text, memory, threshold=0.94, limit=6)
+        if outbound_duplicate["duplicate"]:
+            actor = scene_npc_list[0] if scene_npc_list else "對方"
+            text = (
+                f"{actor}沒有立刻接話，先看了一眼旁邊的人。這一眼讓場面往下沉了些："
+                "你的行動已被記住，但對方也沒有把最要緊的話交出來；後續再逼問，便會牽動更多旁人的判斷。"
+            )
         await message.reply(text)
 
         authoritative_result["state_update"].setdefault("status_set", {})["last_hints"] = (
@@ -832,6 +969,7 @@ async def handle_player_message(message):
             "summary_triggered": summary_info.get("summary_triggered", False),
             "recent_turns": summary_info.get("recent_turns", turn_context.get("recent_turns_count", 0)),
             "story_validation_error": last_error if not ok else "",
+            "duplicate_blocked": bool(outbound_duplicate["duplicate"]),
         })
 
     except Exception as e:

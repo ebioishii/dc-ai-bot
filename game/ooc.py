@@ -3,6 +3,7 @@ from __future__ import annotations
 import re
 
 from game.quality import normalized_similarity
+from game.validation import player_visible_text_problem
 
 
 OOC_UNSAFE_EVENT_MARKERS = (
@@ -106,7 +107,7 @@ def ooc_rewrite_problem(reply: str, *, previous_valid_reply: str = "") -> str:
         return "rewrite invented a new arrival/interruption/event"
     if previous_valid_reply and normalized_similarity(text, previous_valid_reply) >= 0.72:
         return "rewrite repeated too much previous narration"
-    if "【可選行動】" in text or "短期目標" in text:
-        return "rewrite included UI or objective progress"
+    visible_problem = player_visible_text_problem(text, choices_required=False)
+    if visible_problem:
+        return visible_problem
     return ""
-

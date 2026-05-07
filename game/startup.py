@@ -5,11 +5,99 @@ import random
 
 RANDOM_FAMILY_VALUE = "__random_family__"
 
+FORBIDDEN_BACKGROUND_TERMS = (
+    "皇帝看中",
+    "被皇帝看中",
+    "皇上看中",
+    "被皇上看中",
+    "聖上看中",
+    "龍顏",
+    "御前",
+    "召見",
+    "臨幸",
+    "侍寢",
+    "寵幸",
+    "恩寵",
+    "垂青",
+    "青眼",
+    "封號",
+    "晉封",
+    "冊封",
+    "位分驟升",
+    "命運轉動",
+    "走向宮廷深處",
+)
+
 _APPEARANCE_PARTS = {
     "features": ["眉眼清亮", "眼尾微揚", "膚色白淨", "鼻梁秀挺", "唇色淡雅"],
     "temperaments": ["氣度沉靜", "神色溫婉", "姿態端正", "舉止謹慎", "目光澄定"],
     "details": ["衣飾素淨", "髮間只簪一支銀釵", "袖口帶著淡淡熏香", "妝容克制", "步履輕緩"],
 }
+
+
+def build_background_prompt(profile: dict, family: dict, location: dict) -> tuple[str, str]:
+    """Build a constrained character-background prompt that cannot create opening events."""
+    name = profile.get("name", "你")
+    gender = profile.get("gender", "女")
+    rank = profile.get("rank", family.get("rank", "小主"))
+    appearance = profile.get("appearance", "")
+    location_text = _location_text(location)
+    system = (
+        "你是一位清宮文字遊戲的角色背景撰寫者。請只寫玩家入宮前出身與此刻身份的背景，"
+        "不要推進劇情，不要新增皇帝注意、召見、臨幸、獲寵、封號、晉封、被誰特別看中等未發生事件。"
+        "必須符合給定的位階與起始位置；若位階是宮女、辛者庫或服役身份，不得寫成小主、嬪妃、娘娘。"
+        "以第三人稱敘述，一百五十字以內，古風但清楚。"
+    )
+    user = (
+        f"名諱：{name}\n"
+        f"性別：{gender}\n"
+        f"目前位階：{rank}\n"
+        f"起始位置：{location_text}\n"
+        f"家世：{family.get('name', '')}，{family.get('description', '')}\n"
+        f"外貌：{appearance}\n\n"
+        "硬性限制：只描述她/他的出身、外貌、入宮處境與當前被安置的身份；"
+        "不得寫皇帝已經注意、命運已被皇帝改變、已走向宮廷深處、已有恩寵或位分變動。"
+    )
+    return system, user
+
+
+def sanitize_background_description(text: str, profile: dict, family: dict, location: dict) -> str:
+    """Return safe startup background text, replacing generated contradictions if needed."""
+    cleaned = " ".join(str(text or "").split()).strip()
+    if not cleaned or _background_conflicts_with_start(cleaned, profile):
+        return build_fallback_background_description(profile, family, location)
+    return cleaned[:180]
+
+
+def build_fallback_background_description(profile: dict, family: dict, location: dict) -> str:
+    name = profile.get("name") or "此人"
+    rank = profile.get("rank") or family.get("rank") or "新人"
+    family_name = family.get("name") or "尋常人家"
+    family_desc = family.get("description") or ""
+    appearance = profile.get("appearance") or "舉止仍帶著初入宮門的克制"
+    location_text = _location_text(location)
+    return (
+        f"{name}出身{family_name}，{family_desc}。入宮之後，如今以{rank}身份安置在{location_text}，"
+        f"{appearance}；前路未定，眼下只宜先認清住處、人手與宮中分寸。"
+    )[:180]
+
+
+def _background_conflicts_with_start(text: str, profile: dict) -> bool:
+    if any(term in text for term in FORBIDDEN_BACKGROUND_TERMS):
+        return True
+    rank = str(profile.get("rank", ""))
+    low_rank = any(term in rank for term in ("宮女", "辛者庫", "服役"))
+    if low_rank and any(term in text for term in ("小主", "娘娘", "嬪", "妃位", "妃嬪", "常在", "答應", "貴人")):
+        return True
+    return False
+
+
+def _location_text(location: dict) -> str:
+    name = location.get("name") or location.get("id") or "宮中"
+    room = location.get("room") or ""
+    if room and room not in str(name):
+        return f"{name}{room}"
+    return str(name)
 
 
 def resolve_start_family(families: list[dict], family_id: str) -> dict:

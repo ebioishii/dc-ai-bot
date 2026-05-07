@@ -9,6 +9,11 @@ MONEY_WORDS = ("送禮", "賞", "打點", "收買", "賄賂", "銀子", "財物"
 SOCIAL_REPAIR_WORDS = ("賠罪", "請罪", "示好", "安撫", "送禮")
 SOCIAL_GIFT_WORDS = ("點心", "糕", "茶", "茶葉", "請她吃", "請她喝", "招待", "分享", "送入口中", "親手拿")
 INTRIGUE_WORDS = ("試探", "套話", "查", "打探", "觀察", "設局", "反制", "揭穿")
+PUBLIC_PRESSURE_WORDS = ("大聲", "質問", "施壓", "攤牌", "眾人", "周圍", "在場", "證人", "默認")
+ACCUSATION_WORDS = ("告發", "合謀", "指使", "慎行司", "陷害", "串通", "證人", "默認")
+AUDIENCE_WORDS = ("通報", "求見", "請求會面", "覲見", "請安", "稟報", "主位娘娘", "貴妃", "娘娘")
+PALACE_PROPERTY_WORDS = ("丟掉", "換掉", "擺上新的", "新蘭", "蘭花", "陳設", "器物", "文書", "擺設")
+PERMISSION_WORDS = ("請示", "稟報", "奉命", "得令", "按吩咐")
 
 ATTRIBUTE_LIMITS = {
     "體力": (0, 200),
@@ -40,6 +45,7 @@ def evaluate_player_action_costs(judge_result: dict, game_state: dict, relations
     updates = {"attributes_delta": {}, "relations_delta": {}, "hidden_state_delta": {}}
     events = []
     constraints = []
+    denied_assumptions = []
     allowed = True
     reason = ""
 
@@ -97,6 +103,58 @@ def evaluate_player_action_costs(judge_result: dict, game_state: dict, relations
         apply_delta(updates["hidden_state_delta"].setdefault(primary, {}), "interest", 1)
         events.append({"type": "relation_warmed", "target": primary, "visible_effect": "合口味的茶點讓對方態度略微放鬆。"})
 
+    if _is_public_pressure(intent, action_type):
+        apply_delta(updates["attributes_delta"], "聲望", -1)
+        updates.setdefault("status_set", {})["public_pressure_active"] = True
+        constraints.append("public_pressure: loud confrontation draws witnesses and creates reputation risk; story must not present it as clean success.")
+        events.append({
+            "type": "public_pressure",
+            "target": primary or "scene",
+            "visible_effect": "公開質問引來旁人注視，壓力會同時落在對方與玩家身上。",
+        })
+        if primary:
+            updates["relations_delta"].setdefault(primary, {})
+            apply_delta(updates["relations_delta"][primary], "好感度", -2)
+            apply_delta(updates["hidden_state_delta"].setdefault(primary, {}), "suspicion", 4)
+            apply_delta(updates["hidden_state_delta"][primary], "anger", 3)
+
+    if _is_accusation(intent):
+        denied_assumptions.append("accusation is already proven true")
+        constraints.append("accusation_requires_evidence: accusation may create pressure, but guilt is not confirmed without evidence or superior ruling.")
+        events.append({
+            "type": "formal_accusation_risk",
+            "target": primary or "scene",
+            "visible_effect": "指控一旦說出口，就會被旁人記下；若證據不足，反噬會落到玩家身上。",
+        })
+        if primary:
+            apply_delta(updates["hidden_state_delta"].setdefault(primary, {}), "suspicion", 3)
+            apply_delta(updates["hidden_state_delta"][primary], "anger", 2)
+
+    if _requests_high_rank_audience(intent):
+        audience_target = _audience_target(judge_result, gamedata) or "主位娘娘"
+        denied_assumptions.append("high-rank audience is automatically granted")
+        constraints.append("audience_gate: requesting a high-rank audience must go through servants, waiting, or permission; story must not skip directly to the superior hearing the case unless a summons/permission exists.")
+        events.append({
+            "type": "audience_request",
+            "target": audience_target,
+            "visible_effect": "求見主位需要先經宮人通報，能否立刻見到仍未定。",
+        })
+        updates.setdefault("status_set", {}).update({
+            "pending_audience_request": True,
+            "audience_target": audience_target,
+            "audience_request_action": intent[:160],
+        })
+
+    if _touches_palace_property(intent) and not any(word in intent for word in PERMISSION_WORDS):
+        denied_assumptions.append("player may freely replace or discard palace property")
+        constraints.append("palace_property_permission: changing palace furnishings or documents without instruction creates rule risk.")
+        events.append({
+            "type": "palace_property_risk",
+            "target": "scene",
+            "visible_effect": "擅動宮中陳設會被宮人記下，是否算勤快或逾矩要看上位者裁斷。",
+        })
+        apply_delta(updates["attributes_delta"], "聲望", -1)
+
     if action_type == "attack" or any(word in intent for word in VIOLENCE_WORDS):
         if primary:
             npc_life = _npc_life(primary, gamedata)
@@ -118,6 +176,7 @@ def evaluate_player_action_costs(judge_result: dict, game_state: dict, relations
         "state_update": updates,
         "events": events,
         "constraints": constraints,
+        "denied_assumptions": denied_assumptions,
     }
 
 
@@ -170,6 +229,43 @@ def _money_cost(intent: str, action_type: str) -> int:
     if "送禮" in intent or "賞" in intent or "銀子" in intent or "財物" in intent:
         return 15
     return 0
+
+
+def _is_public_pressure(intent: str, action_type: str) -> bool:
+    return action_type in {"pressure", "threaten", "accuse"} or any(word in intent for word in PUBLIC_PRESSURE_WORDS)
+
+
+def _is_accusation(intent: str) -> bool:
+    return any(word in intent for word in ACCUSATION_WORDS)
+
+
+def _requests_high_rank_audience(intent: str) -> bool:
+    if not any(word in intent for word in AUDIENCE_WORDS):
+        return False
+    return any(word in intent for word in ("主位", "娘娘", "貴妃", "皇后", "皇貴妃", "陳貴妃"))
+
+
+def _audience_target(judge_result: dict, gamedata: dict) -> str:
+    npcs = _npc_by_name(gamedata)
+    high_rank_words = ("皇后", "皇貴妃", "貴妃", "妃", "嬪", "娘娘")
+    for name in [str(x).strip() for x in judge_result.get("mentioned_npcs", []) if str(x).strip()]:
+        npc = npcs.get(name, {})
+        rank = str(npc.get("rank", ""))
+        if any(word in rank or word in name for word in high_rank_words):
+            return name
+    intent = str(judge_result.get("player_intent") or judge_result.get("intent") or "")
+    for name, npc in npcs.items():
+        if name and name in intent:
+            rank = str(npc.get("rank", ""))
+            if any(word in rank or word in name for word in high_rank_words):
+                return name
+    return ""
+
+
+def _touches_palace_property(intent: str) -> bool:
+    if not any(word in intent for word in PALACE_PROPERTY_WORDS):
+        return False
+    return any(word in intent for word in ("丟", "換", "擺", "整理", "撥正", "文書", "陳設", "器物", "蘭花"))
 
 
 def _primary_context_npc(judge_result: dict, game_state: dict, gamedata: dict, relations: dict) -> str | None:

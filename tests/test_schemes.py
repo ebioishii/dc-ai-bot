@@ -7,6 +7,7 @@ from game.schemes import (
 )
 from game.npc import extract_companion_candidates, plan_npc_actions
 from game.mechanics import evaluate_player_action_costs, update_social_graph_from_turn
+from game.rules import resolve_rules
 from game.validation import validate_state_update
 
 
@@ -316,6 +317,93 @@ def test_wealth_cost_blocks_bribe_when_poor():
 
     assert result["allowed"] is False
     assert any("wealth" in item for item in result["constraints"])
+
+
+def test_public_accusation_creates_reputation_and_evidence_risk():
+    gamedata = {
+        "npcs": [{"name": "晴蘭", "rank": "宮女", "base_stats": {"體力": 30}}],
+        "ranks": [{"name": "宮女", "level": 9}],
+    }
+    relations = {
+        "npcs": {"晴蘭": {"好感度": 0, "alive": True}},
+        "hidden_state": {"晴蘭": {"suspicion": 0, "anger": 0, "trust": 0}},
+    }
+    result = evaluate_player_action_costs(
+        {
+            "action_type": "pressure",
+            "player_intent": "大聲質問晴蘭是不是有人指使她，讓周圍宮人作證，說要去慎行司告發她合謀",
+            "mentioned_npcs": ["晴蘭"],
+        },
+        {"status": {"attributes": {"體力": 100, "權謀": 30, "聲望": 5, "財產": 0}}, "scene_npcs": ["晴蘭"]},
+        relations,
+        gamedata,
+    )
+
+    assert result["allowed"] is True
+    assert result["state_update"]["attributes_delta"]["聲望"] < 0
+    assert result["state_update"]["hidden_state_delta"]["晴蘭"]["suspicion"] > 0
+    assert any("public_pressure" in item for item in result["constraints"])
+    assert any("accusation_requires_evidence" in item for item in result["constraints"])
+    assert "accusation is already proven true" in result["denied_assumptions"]
+
+
+def test_high_rank_audience_request_does_not_auto_grant_meeting():
+    gamedata = {
+        "npcs": [
+            {"name": "陳貴妃", "rank": "貴妃", "base_stats": {"權謀": 90}},
+            {"name": "晴蘭", "rank": "宮女", "base_stats": {}},
+        ],
+        "ranks": [{"name": "貴妃", "level": 4}, {"name": "宮女", "level": 9}],
+    }
+    relations = {
+        "npcs": {"陳貴妃": {"alive": True}, "晴蘭": {"alive": True}},
+        "hidden_state": {"陳貴妃": {}, "晴蘭": {}},
+    }
+
+    result = resolve_rules(
+        {
+            "action_type": "social",
+            "player_intent": "直接向景仁宮的主位娘娘陳貴妃通報，請求會面後向娘娘告發晴蘭合謀",
+            "mentioned_npcs": ["陳貴妃", "晴蘭"],
+            "mentioned_items": [],
+            "assumptions": [],
+            "social_tone": "neutral",
+            "risk_level": "high",
+            "mechanical_tags": [],
+        },
+        {
+            "profile": {"rank": "宮女"},
+            "status": {"attributes": {"體力": 100, "權謀": 30, "聲望": 0, "財產": 0}, "turn_count": 1},
+            "scene_npcs": ["晴蘭", "其他宮人"],
+        },
+        {},
+        relations,
+        {"items": []},
+        gamedata,
+    )
+
+    assert result["allowed"] is True
+    assert "high-rank audience is automatically granted" in result["denied_assumptions"]
+    assert any("audience_gate" in item for item in result["constraints"])
+    assert result["state_update"]["status_set"]["pending_audience_request"] is True
+    assert result["state_update"]["status_set"]["audience_target"] == "陳貴妃"
+
+
+def test_replacing_palace_furnishing_without_permission_is_rule_risk():
+    result = evaluate_player_action_costs(
+        {
+            "action_type": "other",
+            "player_intent": "將枯萎的蘭花丟掉，並擺上新的蘭花",
+            "mentioned_npcs": [],
+        },
+        {"status": {"attributes": {"體力": 100, "權謀": 30, "聲望": 5, "財產": 0}}, "scene_npcs": []},
+        {"npcs": {}, "hidden_state": {}},
+        {"npcs": [], "ranks": []},
+    )
+
+    assert any("palace_property_permission" in item for item in result["constraints"])
+    assert "player may freely replace or discard palace property" in result["denied_assumptions"]
+    assert result["state_update"]["attributes_delta"]["聲望"] < 0
 
 
 def test_social_graph_records_attention_and_grudge():

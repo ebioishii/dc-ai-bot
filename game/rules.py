@@ -129,6 +129,7 @@ def resolve_rules(judge_result, game_state, memory, relations, inventory, gameda
     merge_state_update(result["state_update"], mechanics.get("state_update", {}))
     result["confirmed_events"].extend(mechanics.get("events", []))
     result["constraints"].extend(mechanics.get("constraints", []))
+    result["denied_assumptions"].extend(mechanics.get("denied_assumptions", []))
     if mechanics.get("allowed") is False:
         result["allowed"] = False
         if mechanics.get("reason"):
@@ -331,7 +332,15 @@ def plan_strategic_choices(
             },
         }
 
-    if any(word in intent for word in ("紙箋", "字條", "信", "紙條")):
+    pressure_terms = ("攤牌", "大聲", "質問", "施壓", "指使", "合謀", "告發", "慎行司", "證人", "默認", "威脅")
+    if any(word in intent for word in pressure_terms) or action_type in {"threaten", "pressure", "accuse"}:
+        choices = [
+            choice("pressure_hold_silence", f"收住話頭，讓{target_label}先在眾人注視下補完剛才沒說完的句子。", "pressure", "medium", "medium", "保留壓力，同時避免自己再多露破綻。", suspicion_delta=2, anger_delta=1, intel_gain=2, objective_progress_delta=8),
+            choice("pressure_offer_private_exit", f"給{target_label}一個私下說明的退路，但先讓旁人聽見她願意交代。", "alliance", "medium", "medium", "可能換到實話，也能降低公開衝突風險。", trust_delta=1, suspicion_delta=1, intel_gain=2, objective_progress_delta=7),
+            choice("pressure_call_witness", "請在場宮人只確認方才聽見了哪些話，不直接替她定罪。", "observe", "low", "low", "穩住證詞，降低反被控誣告的風險。", suspicion_delta=-1, intel_gain=1, reputation_delta=1, objective_progress_delta=5),
+            choice("pressure_report_formally", "按宮規請管事或主位娘娘裁示，把指控交給上位者處理。", "pressure", "high", "high", "可能推動正式調查，但誣告或越級會帶來反噬。", trust_delta=-1, suspicion_delta=4, anger_delta=3, intel_gain=3, reputation_delta=-1, objective_progress_delta=12),
+        ]
+    elif any(word in intent for word in ("紙箋", "字條", "信", "紙條")):
         choices = [
             choice("paper_watch_reaction", f"先不逼問來源，只看{target_label}聽見紙箋二字時的眼神與停頓。", "observe", "low", "low", "安全確認她是否認得紙箋。", suspicion_delta=-1, intel_gain=1, objective_progress_delta=4),
             choice("paper_source_probe", f"把紙箋說成宮人收拾時偶然瞧見，試探{target_label}是否會急著否認。", "probe", "medium", "medium", "可能逼出她是否知情，也可能讓她戒備。", suspicion_delta=2, intel_gain=2, objective_progress_delta=8),
@@ -360,4 +369,3 @@ def plan_strategic_choices(
             choice("force_position", f"把問題推到{target_label}必須選邊的位置，逼她露出真實顧忌。", "pressure", "high", "high", "成功會看清立場，失手會讓場面轉冷。", trust_delta=-2, suspicion_delta=5, anger_delta=2, intel_gain=3, reputation_delta=-1, objective_progress_delta=12),
         ]
     return [choice for choice in choices if choice["id"] not in blocked][:4]
-

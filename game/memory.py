@@ -2,6 +2,7 @@ from __future__ import annotations
 import re
 
 from game.context import compact_memory_window
+from game.quality import duplicate_against_recent
 from game.state import load_player_memory, normalize_memory_record, save_player_data
 
 def load_fact_sheet(user_id) -> str:
@@ -88,15 +89,21 @@ def update_memory(user_id, player_input, reply, status=None, relations=None) -> 
         "summary_turns_since_update": 0
     }, status)
     short_term = memory.get("short_term", [])
-    short_term.append({"user": str(player_input or ""), "bot": clean_reply_for_memory(reply)})
-    memory["short_term"] = short_term
-    memory["summary_turns_since_update"] = int(memory.get("summary_turns_since_update", 0) or 0) + 1
+    cleaned_reply = clean_reply_for_memory(reply)
+    duplicate = duplicate_against_recent(cleaned_reply, short_term, threshold=0.96, limit=4)
+    if cleaned_reply and not duplicate["duplicate"]:
+        short_term.append({"user": str(player_input or ""), "bot": cleaned_reply})
+        memory["short_term"] = short_term
+        memory["summary_turns_since_update"] = int(memory.get("summary_turns_since_update", 0) or 0) + 1
+    else:
+        memory["short_term"] = short_term
     memory, summarized = compact_memory_window(memory, status=status, relations=relations)
     save_player_data(user_id, "memory", normalize_memory_record(memory, status))
     return {
         "summary_triggered": summarized,
         "recent_turns": len(memory.get("short_term", [])),
         "summary_used": bool(memory.get("scene_summary")),
+        "duplicate_skipped": bool(duplicate["duplicate"]),
     }
 
 

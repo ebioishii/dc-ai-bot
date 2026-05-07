@@ -33,6 +33,7 @@ def log_reply_performance(payload: dict) -> dict:
         "summary_triggered": bool(payload.get("summary_triggered", False)),
         "recent_turns": int(payload.get("recent_turns", 0)),
         "story_validation_error": str(payload.get("story_validation_error", ""))[:160],
+        "duplicate_blocked": bool(payload.get("duplicate_blocked", False)),
     }
     print(json.dumps(normalized, ensure_ascii=False))
     return normalized
