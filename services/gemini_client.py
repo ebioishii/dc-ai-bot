@@ -4,21 +4,32 @@ import re
 import json
 import hashlib
 
-import google.generativeai as genai
 from dotenv import load_dotenv
-
-try:
-    from google.generativeai import caching
-except Exception:  # pragma: no cover - optional SDK surface
-    caching = None
 
 load_dotenv()
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-genai.configure(api_key=GEMINI_API_KEY)
+genai = None
+caching = None
 
 GM_MODEL = "gemini-2.5-flash-lite"
 BASE_MODEL = "gemini-2.5-flash-lite"
 _PROMPT_CACHE: dict[str, str] = {}
+
+
+def _ensure_genai():
+    global genai, caching
+    if genai is not None:
+        return genai
+    import google.generativeai as _genai
+
+    _genai.configure(api_key=GEMINI_API_KEY)
+    genai = _genai
+    try:
+        from google.generativeai import caching as _caching
+    except Exception:  # pragma: no cover - optional SDK surface
+        _caching = None
+    caching = _caching
+    return genai
 
 
 def _cache_key(model_name: str, system: str) -> str:
@@ -27,13 +38,15 @@ def _cache_key(model_name: str, system: str) -> str:
 
 
 def _generation_config(max_tokens: int, temperature: float, response_mime_type: str | None = None):
+    client = _ensure_genai()
     kwargs = {"max_output_tokens": max_tokens, "temperature": temperature}
     if response_mime_type:
         kwargs["response_mime_type"] = response_mime_type
-    return genai.types.GenerationConfig(**kwargs)
+    return client.types.GenerationConfig(**kwargs)
 
 
 def _cached_model(model_name: str, system: str):
+    client = _ensure_genai()
     if caching is None or not system or len(system) < 1200:
         return None
     key = _cache_key(model_name, system)
@@ -49,7 +62,7 @@ def _cached_model(model_name: str, system: str):
             )
             cached_name = cached.name
             _PROMPT_CACHE[key] = cached_name
-        return genai.GenerativeModel.from_cached_content(cached_name)
+        return client.GenerativeModel.from_cached_content(cached_name)
     except Exception as e:
         print(f"⚠️ Gemini prompt cache unavailable, falling back: {e}")
         return None

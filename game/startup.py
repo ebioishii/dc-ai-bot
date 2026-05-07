@@ -49,6 +49,82 @@ def resolve_start_location(family: dict, locations: list[dict]) -> dict:
     raise ValueError(f"family {family.get('id')} has invalid start_location: {location_id}")
 
 
+def build_starting_objectives(location: dict, contacts: dict | None = None, npcs: list[dict] | None = None) -> list[dict]:
+    contacts = contacts or {}
+    location_id = location.get("id", "")
+    location_name = location.get("name") or location_id or "宮中"
+    host = str(contacts.get("host_npc") or "").strip()
+    peers = [str(name).strip() for name in contacts.get("peer_npcs", []) if str(name).strip()]
+    local_npcs = [
+        str(npc.get("name")).strip()
+        for npc in (npcs or [])
+        if isinstance(npc, dict) and npc.get("location") == location_id and str(npc.get("name", "")).strip()
+    ]
+    names = list(dict.fromkeys(([host] if host else []) + peers + local_npcs))
+
+    objectives = [{
+        "id": f"understand_{location_id or 'starting_palace'}",
+        "text": f"了解{location_name}內誰掌握話語權",
+        "status": "active",
+        "progress": 0,
+    }]
+    if host:
+        objectives.append({
+            "id": f"judge_{_slug_for_id(host)}",
+            "text": f"判斷{host}是願意庇護你，還是想利用你",
+            "status": "active",
+            "progress": 0,
+        })
+    if len(names) >= 2:
+        others = "、".join(names[1:3])
+        objectives.append({
+            "id": f"observe_{location_id or 'local'}_factions",
+            "text": f"觀察{others}的立場與彼此關係",
+            "status": "active",
+            "progress": 0,
+        })
+    return objectives[:3]
+
+
+def build_starting_relations(location: dict, contacts: dict | None, npcs: list[dict] | None) -> dict:
+    contacts = contacts or {}
+    location_id = location.get("id", "")
+    host = str(contacts.get("host_npc") or "").strip()
+    peers = [str(name).strip() for name in contacts.get("peer_npcs", []) if str(name).strip()]
+    local_names = [
+        str(npc.get("name")).strip()
+        for npc in (npcs or [])
+        if isinstance(npc, dict) and npc.get("location") == location_id and str(npc.get("name", "")).strip()
+    ]
+    names = list(dict.fromkeys(([host] if host else []) + peers + local_names))
+    npcs_by_name = {npc.get("name"): npc for npc in (npcs or []) if isinstance(npc, dict) and npc.get("name")}
+    relations = {"npcs": {}, "companions": {}, "hidden_state": {}, "social_graph": {}, "schemes": []}
+    for name in names:
+        relations["npcs"][name] = {
+            "好感度": 0,
+            "狀態": "初識",
+            "emotion_state": {"anger": 0, "fear": 0},
+            "alive": True,
+        }
+        relations["hidden_state"][name] = _default_hidden_for_start(name, npcs_by_name.get(name), relations["npcs"][name])
+    return relations
+
+
+def _default_hidden_for_start(name: str, npc: dict | None, relation: dict | None) -> dict:
+    from game.npc import default_hidden_state_for_npc
+    return default_hidden_state_for_npc(name, npc, relation)
+
+
+def _slug_for_id(text: str) -> str:
+    result = []
+    for char in str(text):
+        if char.isascii() and char.isalnum():
+            result.append(char.lower())
+        elif "\u4e00" <= char <= "\u9fff":
+            result.append(f"u{ord(char):x}")
+    return "_".join(result)[:80] or "npc"
+
+
 def format_location_display(status: dict | None) -> str:
     if not isinstance(status, dict):
         return "未知"
@@ -91,29 +167,33 @@ def build_opening_story_result(profile: dict, family: dict, location: dict, cont
             "text": f"先細看{location_name}{room}的陳設、門路與可用人手",
             "style": "observe",
             "risk": "low",
+            "reward": "low",
             "effect_hint": "穩健掌握環境線索，降低初入宮門的誤判。",
             "mechanical_effect": {
                 "target": "scene",
-                "relation_delta": 0,
+                "trust_delta": 0,
                 "suspicion_delta": -1,
                 "anger_delta": 0,
-                "info_gain": 1,
+                "intel_gain": 1,
                 "reputation_delta": 0,
+                "objective_progress_delta": 3,
             },
         },
         {
             "id": "choice_2",
             "text": f"以客氣口吻與{peers[0] if peers else '近旁宮人'}寒暄，試探同住之人的脾性",
-            "style": "humble",
+            "style": "flatter",
             "risk": "medium",
+            "reward": "medium",
             "effect_hint": "可能建立初步交情，也會讓對方記住你的態度。",
             "mechanical_effect": {
                 "target": peers[0] if peers else "nearby_servant",
-                "relation_delta": 1,
+                "trust_delta": 1,
                 "suspicion_delta": 1,
                 "anger_delta": 0,
-                "info_gain": 1,
+                "intel_gain": 1,
                 "reputation_delta": 0,
+                "objective_progress_delta": 6,
             },
         },
         {
@@ -121,14 +201,16 @@ def build_opening_story_result(profile: dict, family: dict, location: dict, cont
             "text": f"委婉向來交代規矩的宮人打聽{host}平日最看重什麼",
             "style": "probe",
             "risk": "high",
+            "reward": "high",
             "effect_hint": "若拿捏得當可獲得關鍵情報，失言則容易顯得急切。",
             "mechanical_effect": {
                 "target": host,
-                "relation_delta": 0,
+                "trust_delta": 0,
                 "suspicion_delta": 3,
                 "anger_delta": 0,
-                "info_gain": 2,
+                "intel_gain": 2,
                 "reputation_delta": 0,
+                "objective_progress_delta": 10,
             },
         },
     ]

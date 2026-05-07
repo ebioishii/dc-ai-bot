@@ -5,6 +5,7 @@ from game.schemes import (
     maybe_create_scheme,
     resolve_scheme_by_player_action,
 )
+from game.npc import extract_companion_candidates, plan_npc_actions
 from game.mechanics import evaluate_player_action_costs, update_social_graph_from_turn
 from game.validation import validate_state_update
 
@@ -59,8 +60,46 @@ def test_missing_schemes_are_added_for_old_relations():
     assert relations["social_graph"] == {}
 
 
+def test_companion_candidate_filter_rejects_generic_fragments():
+    text = "你命身旁的宮女退下，青蘭侍女上前奉茶，身旁的太監沒有留名。"
+
+    candidates = extract_companion_candidates(text)
+
+    assert "青蘭" in candidates
+    assert "你命" not in candidates
+    assert "身旁" not in candidates
+
+
+def test_legacy_birth_seeded_scheme_is_pruned_without_touching_player_file():
+    relations = ensure_scheme_state({
+        "npcs": {"李貴妃": {"alive": True}},
+        "companions": {},
+        "schemes": [
+            {
+                "id": "scheme_0_1",
+                "owner": "李貴妃",
+                "target": "玩家",
+                "strategy_id": "li_jian_ji",
+                "goal": "李貴妃想削弱玩家在後宮中的信任與依附",
+                "stage": "seeded",
+                "progress": 10,
+                "risk": 32,
+                "clues": [],
+                "known_by_player": False,
+                "created_turn": 0,
+                "last_advanced_turn": 0,
+            }
+        ],
+    })
+
+    assert relations["schemes"] == []
+
+
 def test_created_scheme_keeps_owner_target_and_goal_when_advanced():
     relations = _relations()
+    owner_record = next(iter(relations["npcs"].values()))
+    owner_record["contact_count"] = 1
+    owner_record["last_interaction_turn"] = 4
     notes = maybe_create_scheme(
         {"risk_level": "high", "social_tone": "probing", "mentioned_npcs": ["皇后"]},
         _game_state(turn=5),
@@ -75,6 +114,97 @@ def test_created_scheme_keeps_owner_target_and_goal_when_advanced():
 
     assert (scheme["owner"], scheme["target"], scheme["goal"]) == original
     assert scheme["stage"] in {"seeded", "developing", "exposed"}
+
+
+def test_npc_action_requires_physical_presence_and_uses_profile_basis():
+    gamedata = {
+        "npcs": [{
+            "name": "李貴妃",
+            "rank": "貴妃",
+            "base_stats": {"心機": 75, "權謀": 70, "聲望": 70},
+            "personality": "趨炎附勢，牆頭草，喜歡在背後嚼舌根，喜歡掌握權力",
+            "hidden": {"hidden_agenda": "依附皇貴妃，藉此打擊皇后勢力"},
+        }],
+        "ranks": [{"name": "貴妃", "level": 4}],
+    }
+    relations = {
+        "npcs": {"李貴妃": {"alive": True}},
+        "hidden_state": {"李貴妃": {"suspicion": 70, "anger": 0, "trust": 0}},
+    }
+    judge = {"mentioned_npcs": ["李貴妃"], "social_tone": "probing", "risk_level": "medium"}
+
+    assert plan_npc_actions(judge, {"scene_npcs": []}, relations, gamedata) == []
+    actions = plan_npc_actions(judge, {"scene_npcs": ["李貴妃"]}, relations, gamedata)
+
+    assert actions
+    assert actions[0]["type"] in {"test", "soft_attack"}
+    assert "牆頭草" in actions[0]["personality_basis"]
+
+
+def test_offscreen_high_rank_npc_cannot_create_birth_scheme():
+    gamedata = {
+        "npcs": [
+            {
+                "name": "皇后",
+                "rank": "皇后",
+                "base_stats": {"心機": 95, "權謀": 95, "聲望": 90},
+            },
+            {
+                "name": "襄嬪",
+                "rank": "嬪",
+                "base_stats": {"心機": 45, "權謀": 45, "聲望": 40},
+            },
+        ],
+        "ranks": [{"name": "皇后", "level": 1}, {"name": "嬪", "level": 8}],
+        "strategies": [{"id": "yin_she_chu_dong", "name": "引蛇出洞", "stat_requirement": {"心機": 60}}],
+    }
+    relations = {
+        "npcs": {"襄嬪": {"好感度": 0, "alive": True, "emotion_state": {"anger": 0, "fear": 0}}},
+        "companions": {},
+        "hidden_state": {
+            "皇后": {"suspicion": 95, "interest": 60, "anger": 0, "trust": 0},
+            "襄嬪": {"suspicion": 30, "interest": 10, "anger": 0, "trust": 0},
+        },
+    }
+
+    notes = maybe_create_scheme(
+        {"risk_level": "high", "social_tone": "probing", "mentioned_npcs": []},
+        {"status": {"turn_count": 0, "attributes": {"權謀": 10, "聲望": 30}}, "scene_npcs": ["襄嬪"]},
+        relations,
+        gamedata,
+    )
+
+    assert notes == []
+    assert relations["schemes"] == []
+
+
+def test_scene_resident_without_actual_contact_cannot_start_scheme():
+    gamedata = {
+        "npcs": [{
+            "name": "李貴妃",
+            "rank": "貴妃",
+            "base_stats": {"心機": 90, "權謀": 90, "聲望": 80},
+        }],
+        "ranks": [{"name": "貴妃", "level": 4}],
+        "strategies": [{"id": "li_jian_ji", "stat_requirement": {"心機": 60}}],
+    }
+    relations = {
+        "npcs": {"李貴妃": {"好感度": 0, "alive": True}},
+        "hidden_state": {"李貴妃": {"suspicion": 80, "interest": 80, "anger": 20}},
+        "schemes": [],
+        "companions": {},
+        "social_graph": {},
+    }
+
+    notes = maybe_create_scheme(
+        {"risk_level": "high", "social_tone": "probing", "mentioned_npcs": ["李貴妃"]},
+        {"status": {"turn_count": 1, "attributes": {"權謀": 10, "聲望": 5}}, "scene_npcs": ["李貴妃"]},
+        relations,
+        gamedata,
+    )
+
+    assert notes == []
+    assert relations["schemes"] == []
 
 
 def test_high_intrigue_player_gets_scheme_clue():

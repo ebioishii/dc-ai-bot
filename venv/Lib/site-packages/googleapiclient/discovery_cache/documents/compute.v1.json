@@ -47006,7 +47006,7 @@
 }
 }
 },
-"revision": "20260331",
+"revision": "20260410",
 "rootUrl": "https://compute.googleapis.com/",
 "schemas": {
 "AWSV4Signature": {
@@ -52890,6 +52890,132 @@ false
 "type": "string"
 },
 "type": "array"
+}
+},
+"type": "object"
+},
+"CachePolicy": {
+"description": "Message containing CachePolicy configuration for URL Map's Route Action.",
+"id": "CachePolicy",
+"properties": {
+"cacheBypassRequestHeaderNames": {
+"description": "Bypass the cache when the specified request headers are matched by name,\ne.g. Pragma or Authorization headers. Values are case-insensitive. Up to 5\nheader names can be specified. The cache is bypassed for all `cacheMode`\nvalues.",
+"items": {
+"type": "string"
+},
+"type": "array"
+},
+"cacheKeyPolicy": {
+"$ref": "CachePolicyCacheKeyPolicy",
+"description": "The cache key configuration. If not specified, the default behavior depends\non the backend type: for Backend Services, the complete request URI is\nused; for Backend Buckets, the request URI is used without the protocol or\nhost, and only query parameters known to Cloud Storage are included."
+},
+"cacheMode": {
+"description": "Specifies the cache setting for all responses from this route. If not\nspecified, Cloud CDN uses `CACHE_ALL_STATIC` mode.",
+"enum": [
+"CACHE_ALL_STATIC",
+"FORCE_CACHE_ALL",
+"USE_ORIGIN_HEADERS"
+],
+"enumDescriptions": [
+"Automatically cache static content, including common image formats,\nmedia (video and audio), and web assets (JavaScript and CSS).\nRequests and responses that are marked as uncacheable, as well as\ndynamic content (including HTML), will not be cached.",
+"Cache all content, ignoring any \"private\", \"no-store\" or \"no-cache\"\ndirectives in Cache-Control response headers.\nWarning: this may result in Cloud CDN caching private,\nper-user (user identifiable) content.",
+"Requires the origin to set valid caching headers to cache content.\nResponses without these headers will not be cached at the edge, and will\nrequire a full trip to the origin on every request, potentially impacting\nperformance and increasing load on the origin server."
+],
+"type": "string"
+},
+"clientTtl": {
+"$ref": "Duration",
+"description": "Specifies a separate client (e.g. browser client) maximum TTL for cached\ncontent. This is used to clamp the max-age (or Expires) value sent to the\nclient. With `FORCE_CACHE_ALL`, the lesser of `clientTtl` and `defaultTtl`\nis used for the response max-age directive, along with a \"public\"\ndirective. For cacheable content in `CACHE_ALL_STATIC` mode, `clientTtl`\nclamps the max-age from the origin (if specified), or else sets the\nresponse max-age directive to the lesser of the `clientTtl` and\n`defaultTtl`, and also ensures a \"public\" cache-control directive is\npresent. The maximum allowed value is 31,622,400s (1 year). If not\nspecified, Cloud CDN uses 3600s (1 hour) for `CACHE_ALL_STATIC` mode.\nCannot exceed `maxTtl`. Cannot be specified when `cacheMode` is\n`USE_ORIGIN_HEADERS`."
+},
+"defaultTtl": {
+"$ref": "Duration",
+"description": "Specifies the default TTL for cached content for responses that do not have\nan existing valid TTL (max-age or s-maxage). Setting a TTL of \"0\" means\n\"always revalidate\". The value of `defaultTtl` cannot be set to a value\ngreater than that of `maxTtl`. When the `cacheMode` is set to\n`FORCE_CACHE_ALL`, the `defaultTtl` will overwrite the TTL set in all\nresponses. The maximum allowed value is 31,622,400s (1 year). Infrequently\naccessed objects may be evicted from the cache before the defined TTL. If\nnot specified, Cloud CDN uses 3600s (1 hour) for `CACHE_ALL_STATIC` and\n`FORCE_CACHE_ALL` modes. Cannot be specified when `cacheMode` is\n`USE_ORIGIN_HEADERS`."
+},
+"maxTtl": {
+"$ref": "Duration",
+"description": "Specifies the maximum allowed TTL for cached content. Cache directives that\nattempt to set a max-age or s-maxage higher than this, or an Expires header\nmore than `maxTtl` seconds in the future will be capped at the value of\n`maxTtl`, as if it were the value of an s-maxage Cache-Control directive.\nHeaders sent to the client will not be modified. Setting a TTL of \"0\" means\n\"always revalidate\". The maximum allowed value is 31,622,400s (1 year).\nInfrequently accessed objects may be evicted from the cache before the\ndefined TTL. If not specified, Cloud CDN uses 86400s (1 day) for\n`CACHE_ALL_STATIC` mode. Can be specified only for `CACHE_ALL_STATIC` cache\nmode."
+},
+"negativeCaching": {
+"description": "Negative caching allows per-status code TTLs to be set, in order\nto apply fine-grained caching for common errors or redirects.\nThis can reduce the load on your origin and improve end-user\nexperience by reducing response latency.\nWhen the `cacheMode` is set to `CACHE_ALL_STATIC` or\n`USE_ORIGIN_HEADERS`, negative caching applies to responses with\nthe specified response code that lack any Cache-Control, Expires, or\nPragma: no-cache directives. When the `cacheMode` is set to\n`FORCE_CACHE_ALL`, negative caching applies to all responses\nwith the specified response code, and overrides any caching headers. By\ndefault, Cloud CDN applies the following TTLs to these HTTP status codes:\n\n* 300 (Multiple Choice), 301, 308 (Permanent Redirects): 10m\n* 404 (Not Found), 410 (Gone), 451 (Unavailable For Legal Reasons): 120s\n* 405 (Method Not Found), 501 (Not Implemented): 60s\n\nThese defaults can be overridden in `negativeCachingPolicy`.\nIf not specified, Cloud CDN applies negative caching by default.",
+"type": "boolean"
+},
+"negativeCachingPolicy": {
+"description": "Sets a cache TTL for the specified HTTP status code.\n`negativeCaching` must be enabled to configure `negativeCachingPolicy`.\nOmitting the policy and leaving `negativeCaching` enabled will use Cloud\nCDN's default cache TTLs. Note that when specifying an explicit\n`negativeCachingPolicy`, you should take care to specify a cache TTL for\nall response codes that you wish to cache. Cloud CDN will not apply any\ndefault negative caching when a policy exists.",
+"items": {
+"$ref": "CachePolicyNegativeCachingPolicy"
+},
+"type": "array"
+},
+"requestCoalescing": {
+"description": "If true then Cloud CDN will combine multiple concurrent cache fill\nrequests into a small number of requests to the origin. If not specified,\nCloud CDN applies request coalescing by default.",
+"type": "boolean"
+},
+"serveWhileStale": {
+"$ref": "Duration",
+"description": "Serve existing content from the cache (if available) when revalidating\ncontent with the origin, or when an error is encountered when refreshing\nthe cache.\nThis setting defines the default \"max-stale\" duration for any cached\nresponses that do not specify a max-stale directive. Stale responses that\nexceed the TTL configured here will not be served. The default limit\n(max-stale) is 86400s (1 day), which will allow stale content to be\nserved up to this limit beyond the max-age (or s-maxage) of a cached\nresponse.\nThe maximum allowed value is 604800 (1 week).\nSet this to zero (0) to disable serve-while-stale."
+}
+},
+"type": "object"
+},
+"CachePolicyCacheKeyPolicy": {
+"description": "Message containing what to include in the cache key for a request for Cache\nPolicy defined on Route Action.",
+"id": "CachePolicyCacheKeyPolicy",
+"properties": {
+"excludedQueryParameters": {
+"description": "Names of query string parameters to exclude in cache keys. All other\nparameters will be included. Either specify `excludedQueryParameters`\nor `includedQueryParameters`, not both. '&' and '=' will be percent\nencoded and not treated as delimiters.\n\nNote: This field applies to routes that use backend services. Attempting\nto set it on a route that points exclusively to Backend Buckets will\nresult in a configuration error. For routes that point to a Backend\nBucket, use `includedQueryParameters` to define which parameters should\nbe part of the cache key.",
+"items": {
+"type": "string"
+},
+"type": "array"
+},
+"includeHost": {
+"description": "If true, requests to different hosts will be cached separately.\n\nNote: This setting is only applicable to routes that use a Backend\nService. It does not affect requests served by a Backend Bucket, as the\nhost is never included in a Backend Bucket's cache key. Attempting to set\nit on a route that points exclusively to Backend Buckets will result in a\nconfiguration error.",
+"type": "boolean"
+},
+"includeProtocol": {
+"description": "If true, http and https requests will be cached separately.\n\nNote: This setting is only applicable to routes that use a Backend\nService. It does not affect requests served by a Backend Bucket, as the\nprotocol is never included in a Backend Bucket's cache key. Attempting to\nset on a route that points exclusively to Backend Buckets will result in\na configuration error.",
+"type": "boolean"
+},
+"includeQueryString": {
+"description": "If true, include query string parameters in the cache key according to\n`includedQueryParameters` and `excludedQueryParameters`. If neither\nis set, the entire query string will be included. If false, the query\nstring will be excluded from the cache key entirely.\n\nNote: This field applies to routes that use backend services. Attempting\nto set it on a route that points exclusively to Backend Buckets will\nresult in a configuration error. For routes that point to a Backend\nBucket, use `includedQueryParameters` to define which parameters should\nbe part of the cache key.",
+"type": "boolean"
+},
+"includedCookieNames": {
+"description": "Allows HTTP cookies (by name) to be used in the cache key.\nThe name=value pair will be used in the cache key Cloud CDN generates.\n\nNote: This setting is only applicable to routes that use a Backend\nService. It does not affect requests served by a Backend Bucket.\nAttempting to set it on a route that points exclusively to Backend\nBuckets will result in a configuration error. Up to 5 cookie names can be\nspecified.",
+"items": {
+"type": "string"
+},
+"type": "array"
+},
+"includedHeaderNames": {
+"description": "Allows HTTP request headers (by name) to be used in the cache key.",
+"items": {
+"type": "string"
+},
+"type": "array"
+},
+"includedQueryParameters": {
+"description": "Names of query string parameters to include in cache keys. All other\nparameters will be excluded. Either specify `includedQueryParameters`\nor `excludedQueryParameters`, not both. '&' and '=' will be percent\nencoded and not treated as delimiters.",
+"items": {
+"type": "string"
+},
+"type": "array"
+}
+},
+"type": "object"
+},
+"CachePolicyNegativeCachingPolicy": {
+"description": "Specify CDN TTLs for response error codes.",
+"id": "CachePolicyNegativeCachingPolicy",
+"properties": {
+"code": {
+"description": "The HTTP status code to define a TTL against. Only HTTP status codes\n300, 301, 302, 307, 308, 404, 405, 410, 421, 451 and 501 can be\nspecified as values, and you cannot specify a status code more than\nonce.",
+"format": "int32",
+"type": "integer"
+},
+"ttl": {
+"$ref": "Duration",
+"description": "The TTL (in seconds) for which to cache responses with the\ncorresponding status code.\nThe maximum allowed value is 1800s (30 minutes). Infrequently accessed\nobjects may be evicted from the cache before the defined TTL."
 }
 },
 "type": "object"
@@ -63384,6 +63510,10 @@ false
 "HttpRouteAction": {
 "id": "HttpRouteAction",
 "properties": {
+"cachePolicy": {
+"$ref": "CachePolicy",
+"description": "Specifies the cache policy configuration for matched traffic. Available\nonly for Global `EXTERNAL_MANAGED` load balancer schemes. At least one\nproperty must be specified. This policy cannot be specified if any target\nbackend has Identity-Aware Proxy enabled."
+},
 "corsPolicy": {
 "$ref": "CorsPolicy",
 "description": "The specification for allowing client-side cross-origin requests. For more\ninformation about the W3C recommendation for cross-origin resource sharing\n(CORS), see Fetch API Living\nStandard.\n\nNot supported when the URL map is bound to a target gRPC proxy."

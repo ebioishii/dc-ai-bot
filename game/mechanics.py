@@ -7,6 +7,7 @@ PHYSICAL_WORDS = ("跑", "逃", "追", "打", "踢", "推", "摔", "攻擊", "�
 VIOLENCE_WORDS = ("打", "踢", "推", "摔", "攻擊", "掌摑", "刺", "砍")
 MONEY_WORDS = ("送禮", "賞", "打點", "收買", "賄賂", "銀子", "財物", "買通")
 SOCIAL_REPAIR_WORDS = ("賠罪", "請罪", "示好", "安撫", "送禮")
+SOCIAL_GIFT_WORDS = ("點心", "糕", "茶", "茶葉", "請她吃", "請她喝", "招待", "分享", "送入口中", "親手拿")
 INTRIGUE_WORDS = ("試探", "套話", "查", "打探", "觀察", "設局", "反制", "揭穿")
 
 ATTRIBUTE_LIMITS = {
@@ -88,6 +89,13 @@ def evaluate_player_action_costs(judge_result: dict, game_state: dict, relations
             updates["relations_delta"].setdefault(primary, {})
             apply_delta(updates["relations_delta"][primary], "好感度", -1)
             constraints.append("grudge_memory: old grievances make repair attempts less effective.")
+
+    if primary and action_type in {"social", "use_item", "other"} and any(word in intent for word in SOCIAL_GIFT_WORDS):
+        updates["relations_delta"].setdefault(primary, {})
+        apply_delta(updates["relations_delta"][primary], "好感度", 2)
+        apply_delta(updates["hidden_state_delta"].setdefault(primary, {}), "trust", 1)
+        apply_delta(updates["hidden_state_delta"].setdefault(primary, {}), "interest", 1)
+        events.append({"type": "relation_warmed", "target": primary, "visible_effect": "合口味的茶點讓對方態度略微放鬆。"})
 
     if action_type == "attack" or any(word in intent for word in VIOLENCE_WORDS):
         if primary:

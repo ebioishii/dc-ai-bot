@@ -5,25 +5,32 @@ from discord import app_commands
 from discord.ext import commands
 from dotenv import load_dotenv
 
-from services.gemini_client import BASE_MODEL, call_gemini
+from services.gemini_client import BASE_MODEL, call_gemini, call_gemini_json
 from game.state import (
     get_script, get_player_folder, save_player_data, load_player_data, player_exists,
     load_player_profile, load_player_status, load_player_memory,
     load_player_inventory, load_player_relations, get_families,
-    get_locations, _load_gamedata_bundle, apply_state_update,
+    get_locations, get_npcs, _load_gamedata_bundle, apply_state_update,
+    ensure_current_objectives, normalize_inventory_record, normalize_memory_record,
+    normalize_player_records, normalize_profile_record, normalize_relations_record,
+    normalize_status_record,
 )
 from game.memory import load_fact_sheet, update_fact_sheet, build_history_summary, update_memory
 from game.context import (
     build_model_context, classify_event_size, output_length_policy,
-    should_offer_choices, normalize_scene_state,
+    normalize_scene_state,
+)
+from game.hints import compact_hints_for_status, format_hint_reply
+from game.ooc import (
+    build_ooc_rewrite_prompt, extract_ooc_target_action,
+    ooc_rewrite_problem, should_record_ooc_fact,
 )
 from game.performance import elapsed_ms, estimate_tokens, log_reply_performance, now_ms
 from game.quality import (
-    finalize_story_result, inspect_story_quality, natural_next_step_hint,
-    sanitize_player_visible_text,
+    finalize_story_result, inspect_story_quality, sanitize_player_visible_text,
 )
 from game.npc import (
-    select_relevant_npcs, format_selected_npc_data, get_scene_npcs,
+    select_relevant_npcs, format_selected_npc_data, get_scene_npcs, get_present_scene_npcs,
     detect_extreme_action, update_npc_emotions, build_emotion_override,
     detect_affection_change, update_npc_affection, update_companion_tracking,
     ensure_hidden_state,
@@ -31,10 +38,14 @@ from game.npc import (
 from game.formatting import _affection_tier, format_player_relations, format_game_rules, format_story_reply
 from game.rules import classify_player_input, resolve_rules
 from game.judge import build_judge_prompt, call_judge_ai
-from game.story import make_gm_system_instruction, build_story_prompt, call_story_ai, fallback_story_result
+from game.story import (
+    make_gm_system_instruction, build_story_prompt, call_story_ai,
+    fallback_story_result, suppress_choices_when_disabled,
+)
 from game.validation import validate_story_output_reason
 from game.startup import (
     RANDOM_FAMILY_VALUE, build_opening_story_result, format_location_display,
+    build_starting_objectives, build_starting_relations,
     generate_random_appearance, resolve_start_family, resolve_start_location,
 )
 
@@ -79,6 +90,9 @@ class StartModal(discord.ui.Modal):
         bonus = self.family.get("starting_bonus", {})
         user_id = interaction.user.id
         start_location = resolve_start_location(self.family, get_locations())
+        npc_data = get_npcs()
+        opening_contacts = self.family.get("opening_contacts", {})
+        starting_objectives = build_starting_objectives(start_location, opening_contacts, npc_data)
 
         get_player_folder(user_id)
 
@@ -92,13 +106,14 @@ class StartModal(discord.ui.Modal):
             "appearance": appearance,
             "rank": self.family["rank"]
         }
+        profile = normalize_profile_record(profile)
         save_player_data(user_id, 'profile', profile)
 
         opening_story = build_opening_story_result(
             profile,
             self.family,
             start_location,
-            self.family.get("opening_contacts", {})
+            opening_contacts
         )
 
         # 2. status.json
@@ -108,7 +123,8 @@ class StartModal(discord.ui.Modal):
             "location_id": start_location["id"],
             "location_name": start_location["name"],
             "room": start_location.get("room", ""),
-            "last_choices": compact_choices_for_status(opening_story),
+            "last_hints": compact_hints_for_status(opening_story.get("choices", [])),
+            "current_objectives": starting_objectives,
             "attributes": {
                 "體力": bonus.get("體力", 100),
                 "權謀": bonus.get("權謀", 10),
@@ -125,6 +141,7 @@ class StartModal(discord.ui.Modal):
                 }
             }
         }
+        status = normalize_status_record(status)
         save_player_data(user_id, 'status', status)
 
         # 3. memory.json — 加入 fact_sheet 欄位
@@ -134,17 +151,19 @@ class StartModal(discord.ui.Modal):
             "fact_sheet": "",
             "fact_sheet_items": [],
             "scene_summary": "",
-            "scene_state": {},
             "summary_turns_since_update": 0
         }
+        memory = normalize_memory_record(memory, status)
         save_player_data(user_id, 'memory', memory)
 
         # 4. inventory.json
         inventory = {"items": ["家傳玉佩"]}
+        inventory = normalize_inventory_record(inventory)
         save_player_data(user_id, 'inventory', inventory)
 
         # 5. relations.json
-        relations = {"npcs": {}, "companions": {}}
+        relations = build_starting_relations(start_location, opening_contacts, npc_data)
+        relations = normalize_relations_record(relations)
         save_player_data(user_id, 'relations', relations)
 
         # 顯示創角 Embed
@@ -169,7 +188,7 @@ class StartModal(discord.ui.Modal):
 
         await interaction.channel.send(f"**身分背景**\n\n{char_desc}")
 
-        opening = format_story_reply(opening_story)
+        opening = format_story_reply(opening_story, show_choices=False)
         await interaction.channel.send(content=opening)
 
         # 將開場存入短期記憶（user 欄使用自然語句，避免 Gemini 困惑）
@@ -180,7 +199,7 @@ class StartModal(discord.ui.Modal):
                 "user": "【開場】請描述我初入宮廷時的第一幕場景，從此刻起我正式踏入這座深宮。",
                 "bot": initial_scene
             })
-            save_player_data(user_id, 'memory', memory)
+            save_player_data(user_id, 'memory', normalize_memory_record(memory, status))
 
 
 class FamilySelect(discord.ui.Select):
@@ -270,46 +289,6 @@ class HaremBot(commands.Bot):
 bot = HaremBot()
 
 
-def resolve_choice_input(raw_text: str, status: dict | None) -> str:
-    text = raw_text.strip()
-    if text not in {"1", "2", "3", "4"}:
-        return raw_text
-    choices = (status or {}).get("last_choices", [])
-    if not isinstance(choices, list):
-        return raw_text
-    index = int(text) - 1
-    if index < 0 or index >= len(choices):
-        return raw_text
-    choice = choices[index]
-    if not isinstance(choice, dict):
-        return raw_text
-    choice_text = str(choice.get("text", "")).strip()
-    effect_hint = str(choice.get("effect_hint", "")).strip()
-    if not choice_text:
-        return raw_text
-    return f"{choice_text}（玩家選擇上一輪第 {text} 項。效果提示：{effect_hint}）"
-
-
-def compact_choices_for_status(story_result: dict) -> list[dict]:
-    compact = []
-    choices = story_result.get("choices", []) if isinstance(story_result, dict) else []
-    for choice in choices[:4] if isinstance(choices, list) else []:
-        if not isinstance(choice, dict):
-            continue
-        compact.append({
-            "id": str(choice.get("id", ""))[:40],
-            "text": str(choice.get("text", ""))[:160],
-            "style": str(choice.get("style", ""))[:30],
-            "risk": str(choice.get("risk", ""))[:20],
-            "effect_hint": str(choice.get("effect_hint", ""))[:160],
-        })
-    return compact
-
-
-# ============================================================
-# 指令
-# ============================================================
-
 @bot.tree.command(name="start", description="開始遊戲並建立身分")
 async def start(interaction: discord.Interaction):
     if player_exists(interaction.user.id):
@@ -366,6 +345,32 @@ async def profile(interaction: discord.Interaction):
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
 
+@bot.tree.command(name="objectives", description="查看目前短期目標提示")
+async def objectives(interaction: discord.Interaction):
+    status = load_player_status(interaction.user.id)
+    memory = load_player_memory(interaction.user.id) or {}
+    if not status:
+        await interaction.response.send_message("尚未建立角色，請先使用 /start。", ephemeral=True)
+        return
+    text = format_hint_reply(status, memory, include_hints=False)
+    save_player_data(interaction.user.id, "status", normalize_status_record(status))
+    save_player_data(interaction.user.id, "memory", normalize_memory_record(memory, status))
+    await interaction.response.send_message(text)
+
+
+@bot.tree.command(name="hint", description="查看目前短期目標與建議行動")
+async def hint(interaction: discord.Interaction):
+    status = load_player_status(interaction.user.id)
+    memory = load_player_memory(interaction.user.id) or {}
+    if not status:
+        await interaction.response.send_message("尚未建立角色，請先使用 /start。", ephemeral=True)
+        return
+    text = format_hint_reply(status, memory, include_hints=True)
+    save_player_data(interaction.user.id, "status", normalize_status_record(status))
+    save_player_data(interaction.user.id, "memory", normalize_memory_record(memory, status))
+    await interaction.response.send_message(text)
+
+
 @bot.tree.command(name="ooc", description="直接與 AI 溝通，糾正劇情錯誤")
 async def ooc(interaction: discord.Interaction, *, correction: str):
     profile = load_player_profile(interaction.user.id)
@@ -387,51 +392,68 @@ async def ooc(interaction: discord.Interaction, *, correction: str):
     last_exchange = short_term.pop()
     if memory:
         memory['short_term'] = short_term
-        save_player_data(interaction.user.id, 'memory', memory)
+        save_player_data(interaction.user.id, 'memory', normalize_memory_record(memory, status))
 
-    game_rules = format_game_rules()
-    gm_system = make_gm_system_instruction(game_rules)
-
-    location = status.get('location', '未知') if status else '未知'
-    attributes = status.get('attributes', {}) if status else {}
-    # ── 修正3：只保留最近 3 輪 ──
+    location = (status or {}).get("location_name") or (status or {}).get("location") or "未知"
     history_summary = build_history_summary(short_term)
-    npc_database = format_selected_npc_data(select_relevant_npcs(location, correction, load_player_relations(interaction.user.id)))
-    # ── 修正2：注入事實清單 ──
+    relations = load_player_relations(interaction.user.id)
+    present_npcs = get_present_scene_npcs(location, profile=profile, status=status or {}, player_input=correction)
+    selected_npcs = select_relevant_npcs(location, correction, relations, limit=4)
+    npc_database = format_selected_npc_data(selected_npcs)
     fact_sheet = load_fact_sheet(interaction.user.id)
-    fact_section = f"\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n已確認事實清單（最高優先級，不得違背）\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n{fact_sheet if fact_sheet else '（尚無修正記錄）'}\n" if fact_sheet else ""
-
-    ooc_template = get_script("templates", "ooc_correction")
-    full_prompt = ooc_template.format(
+    target_action = extract_ooc_target_action(correction, last_exchange)
+    previous_valid_reply = str(short_term[-1].get("bot", "")) if short_term else ""
+    ooc_system, ooc_prompt = build_ooc_rewrite_prompt(
         correction=correction,
-        last_scene=last_exchange.get('bot', '[無紀錄]')[:200],
-        name=profile['name'],
-        background=profile['family_description'],
-        location=location,
-        attributes=attributes,
+        target_action=target_action,
+        invalid_previous_reply=last_exchange.get("bot", ""),
+        profile=profile,
+        status=status or {},
+        present_npcs=present_npcs,
         npc_database=npc_database,
         history_summary=history_summary,
-    ) + fact_section
+        fact_sheet=fact_sheet,
+    )
 
     try:
-        text = await call_gemini(gm_system, full_prompt, use_prompt_cache=True)
+        data = await call_gemini_json(ooc_system, ooc_prompt, temperature=0.55, max_tokens=700)
+        text = data.get("reply", "") if isinstance(data, dict) else ""
         if not text:
             await interaction.followup.send("修正劇情觸動禁忌，無法生成，請換個修正方向。", ephemeral=True)
             return
 
         text = sanitize_player_visible_text(text)
+        problem = ooc_rewrite_problem(text, previous_valid_reply=previous_valid_reply)
+        if problem:
+            retry_prompt = (
+                ooc_prompt
+                + f"\n\nPrevious rewrite failed local check: {problem}. "
+                + "Rewrite again. Do not add arrivals, summons, interruptions, new conflicts, or repeat earlier setup. JSON only."
+            )
+            data = await call_gemini_json(ooc_system, retry_prompt, temperature=0.45, max_tokens=700)
+            text = sanitize_player_visible_text(data.get("reply", "") if isinstance(data, dict) else "")
+            problem = ooc_rewrite_problem(text, previous_valid_reply=previous_valid_reply)
+        if problem:
+            text = "你按下方才失準的敘述，重新把注意力放回眼前。長春宮偏殿的陳設與宮人反應仍有可察之處，在場之人也仍按原本的禮數應對；這一幕暫不新增傳喚、闖入或突發變故。"
+
+        story_result, _ = finalize_story_result(
+            {"reply": text, "choices": []},
+            previous_reply=previous_valid_reply,
+            length_policy={"max_chars": 380},
+        )
+        text = story_result.get("reply", text)
         await interaction.followup.send("已記錄修正，玩家頻道只會顯示修正後劇情。", ephemeral=True)
         await interaction.channel.send(text)
 
-        # ── 修正2：更新事實清單 ──
-        update_fact_sheet(interaction.user.id, correction, text[:80])
+        if should_record_ooc_fact(correction):
+            update_fact_sheet(interaction.user.id, correction, text[:80])
 
         # 儲存修正後的劇情
-        short_term.append({"user": f"玩家要求校正上一幕：{correction}", "bot": text})
+        short_term.append({"user": target_action, "bot": text})
         short_term = short_term[-10:]
         if memory:
             memory['short_term'] = short_term
-            save_player_data(interaction.user.id, 'memory', memory)
+            save_player_data(interaction.user.id, 'memory', normalize_memory_record(memory, status))
 
     except Exception as e:
         await interaction.followup.send(f"修正失敗：{e}", ephemeral=True)
@@ -485,7 +507,7 @@ async def op_cmd(interaction: discord.Interaction, *, command: str):
             short_term.append({"user": f"GM 調整：{command}", "bot": text})
             short_term = short_term[-10:]
             memory['short_term'] = short_term
-            save_player_data(interaction.user.id, 'memory', memory)
+            save_player_data(interaction.user.id, 'memory', normalize_memory_record(memory, status))
 
     except Exception as e:
         await interaction.followup.send(f"指令執行失敗：{e}", ephemeral=True)
@@ -569,9 +591,14 @@ async def handle_player_message(message):
     summary_info = {"summary_triggered": False, "summary_used": False, "recent_turns": 0}
 
     try:
-        profile = load_player_profile(message.author.id)
-        status = load_player_status(message.author.id)
-        memory = load_player_memory(message.author.id) or {}
+        if player_exists(message.author.id):
+            normalized_records = normalize_player_records(message.author.id)
+        else:
+            normalized_records = {}
+        profile = normalized_records.get("profile") or load_player_profile(message.author.id)
+        status = normalized_records.get("status") or load_player_status(message.author.id)
+        memory = normalized_records.get("memory") or load_player_memory(message.author.id) or {}
+        ensure_current_objectives(status or {}, memory)
         if not profile:
             return
 
@@ -580,16 +607,16 @@ async def handle_player_message(message):
         relations = load_player_relations(message.author.id)
         player_relations_str = format_player_relations(relations)
 
-        scene_npcs_str = get_scene_npcs(location)
-        scene_npc_list = [n.strip() for n in scene_npcs_str.split('、') if n.strip() and n != '無']
+        scene_npc_list = get_present_scene_npcs(location, profile=profile, status=status or {}, player_input=message.content)
         fact_sheet = load_fact_sheet(message.author.id)
 
-        resolved_content = resolve_choice_input(message.content, status)
+        resolved_content = message.content
         input_type, cleaned_action = classify_player_input(resolved_content)
 
         affection_delta = detect_affection_change(message.content)
         if affection_delta != 0 and scene_npc_list:
-            for npc_name in scene_npc_list:
+            explicit_affection_targets = [name for name in scene_npc_list if name and name in message.content]
+            for npc_name in explicit_affection_targets:
                 update_npc_affection(message.author.id, npc_name, affection_delta)
             relations = load_player_relations(message.author.id)
             player_relations_str = format_player_relations(relations)
@@ -627,11 +654,12 @@ async def handle_player_message(message):
             "relations": relations or {"npcs": {}, "companions": {}},
             "scene_state": turn_context.get("scene_state", {}),
             "scene_summary": turn_context.get("scene_summary", ""),
-            "input_type": input_type
+            "input_type": input_type,
         }
         inventory = load_player_inventory(message.author.id) or {"items": []}
         gamedata = _load_gamedata_bundle()
         relations = ensure_hidden_state(relations, gamedata, game_state, cleaned_action)
+        relations = normalize_relations_record(relations)
         save_player_data(message.author.id, "relations", relations)
         game_state["relations"] = relations
 
@@ -678,7 +706,7 @@ async def handle_player_message(message):
         game_state["scene_state"] = turn_context.get("scene_state", {})
         event_size = classify_event_size(judge_result, authoritative_result)
         length_policy = output_length_policy(event_size)
-        offer_choices = should_offer_choices(cleaned_action, judge_result, authoritative_result)
+        offer_choices = False
 
         selected_npcs = select_relevant_npcs(location, cleaned_action, relations, limit=4)
         selected_lore = {
@@ -705,6 +733,7 @@ async def handle_player_message(message):
         call_start = now_ms()
         story_result = await call_story_ai(story_system, story_prompt)
         model_duration_ms += elapsed_ms(call_start)
+        story_result = suppress_choices_when_disabled(story_result, offer_choices)
 
         ok, last_error = validate_story_output_reason(
             story_result,
@@ -736,6 +765,7 @@ async def handle_player_message(message):
             call_start = now_ms()
             story_result = await call_story_ai(story_system, retry_prompt)
             model_duration_ms += elapsed_ms(call_start)
+            story_result = suppress_choices_when_disabled(story_result, offer_choices)
             ok, last_error = validate_story_output_reason(
                 story_result,
                 authoritative_result,
@@ -744,6 +774,7 @@ async def handle_player_message(message):
             )
 
         if not ok:
+            print(f"Story validation failed; using fallback: {last_error}")
             story_result = fallback_story_result(authoritative_result)
 
         story_result, _final_quality = finalize_story_result(
@@ -751,13 +782,18 @@ async def handle_player_message(message):
             previous_reply=previous_reply,
             length_policy=length_policy,
         )
-        hint = "" if offer_choices else natural_next_step_hint(story_result)
-        text = format_story_reply(story_result, show_choices=offer_choices, natural_hint=hint)
+        if _final_quality.get("duplicate"):
+            story_result, _final_quality = finalize_story_result(
+                fallback_story_result(authoritative_result),
+                previous_reply=previous_reply,
+                length_policy=length_policy,
+            )
+        text = format_story_reply(story_result, show_choices=False, natural_hint="")
         text = sanitize_player_visible_text(text)
         await message.reply(text)
 
-        authoritative_result["state_update"].setdefault("status_set", {})["last_choices"] = (
-            compact_choices_for_status(story_result) if offer_choices else []
+        authoritative_result["state_update"].setdefault("status_set", {})["last_hints"] = (
+            compact_hints_for_status(authoritative_result.get("strategic_choices", []))
         )
         scene_state = normalize_scene_state(
             turn_context.get("scene_state", {}),
@@ -776,14 +812,12 @@ async def handle_player_message(message):
             latest_relations = load_player_relations(message.author.id)
             summary_info = update_memory(
                 message.author.id,
-                message.content,
-                text,
+                cleaned_action,
+                story_result.get("reply", ""),
                 status=latest_status,
                 relations=latest_relations,
             )
-            memory = load_player_memory(message.author.id) or {}
-            memory["scene_state"] = scene_state
-            save_player_data(message.author.id, "memory", memory)
+            normalize_player_records(message.author.id)
         except Exception as post_error:
             print(f"Post-reply maintenance error: {post_error}")
 
@@ -797,6 +831,7 @@ async def handle_player_message(message):
             "summary_used": summary_info.get("summary_used", False),
             "summary_triggered": summary_info.get("summary_triggered", False),
             "recent_turns": summary_info.get("recent_turns", turn_context.get("recent_turns_count", 0)),
+            "story_validation_error": last_error if not ok else "",
         })
 
     except Exception as e:

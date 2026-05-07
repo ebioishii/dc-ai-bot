@@ -27,6 +27,8 @@ def ensure_scheme_state(relations: dict | None) -> dict:
     for index, scheme in enumerate(raw_schemes, 1):
         if not isinstance(scheme, dict):
             continue
+        if _is_legacy_birth_scheme(scheme):
+            continue
         scheme_id = str(scheme.get("id") or f"scheme_{index}").strip()
         if not scheme_id or scheme_id in seen_ids:
             scheme_id = f"scheme_{index}"
@@ -50,6 +52,21 @@ def ensure_scheme_state(relations: dict | None) -> dict:
         })
     relations["schemes"] = normalized
     return relations
+
+
+def _is_legacy_birth_scheme(scheme: dict) -> bool:
+    """Drop old auto-created schemes that were seeded before any playable clue existed."""
+    if str(scheme.get("stage") or "seeded") != "seeded":
+        return False
+    if bool(scheme.get("known_by_player", False)):
+        return False
+    if _unique_strings(scheme.get("clues", []), 8):
+        return False
+    if _safe_int(scheme.get("created_turn", 0)) > 2:
+        return False
+    if _safe_int(scheme.get("last_advanced_turn", 0)) > 2:
+        return False
+    return clamp_int(scheme.get("progress", 0), 0, 100) <= 10
 
 
 def maybe_create_scheme(judge_result: dict, game_state: dict, relations: dict, gamedata: dict) -> list[dict]:
@@ -246,24 +263,60 @@ def _active_schemes(relations: dict) -> list[dict]:
 
 
 def _best_scheme_owner(judge_result: dict, game_state: dict, relations: dict, gamedata: dict) -> str | None:
+    """Choose a scheme owner only from NPCs the player has actually touched.
+
+    High-rank NPCs can exist in the database and hidden_state, but they should
+    not start schemes from off-screen just because their stats are strong.
+    """
     npcs_by_name = _npc_by_name(gamedata)
     candidates = []
     seen = set()
+    rel_npcs = (relations or {}).get("npcs", {}) if isinstance(relations, dict) else {}
     mentioned = [str(x) for x in judge_result.get("mentioned_npcs", []) if str(x).strip()]
     scene = [str(x) for x in (game_state or {}).get("scene_npcs", []) if str(x).strip()]
-    for name in mentioned + scene + list(npcs_by_name.keys()):
-        if name in npcs_by_name and name not in seen and not _is_dead(name, relations):
-            seen.add(name)
-            npc = npcs_by_name[name]
-            stats = get_npc_stats(npc)
-            hidden = _hidden_state_for(relations, name)
-            score = _stat(stats, "心機") + _stat(stats, "權謀") + clamp_int(hidden.get("suspicion", 0), 0, 100)
-            if _is_high_rank_npc(npc, gamedata):
-                score += 20
-            candidates.append((score, name))
+    interacted = [name for name, data in rel_npcs.items() if isinstance(data, dict)]
+
+    for name in mentioned + scene + interacted:
+        if name not in npcs_by_name or name in seen or _is_dead(name, relations):
+            continue
+        if not _has_actual_contact(name, relations):
+            continue
+        seen.add(name)
+        npc = npcs_by_name[name]
+        stats = get_npc_stats(npc)
+        hidden = _hidden_state_for(relations, name)
+        rel = rel_npcs.get(name, {}) if isinstance(rel_npcs, dict) else {}
+        score = (
+            _stat(stats, "心機")
+            + _stat(stats, "權謀")
+            + _stat(stats, "聲望") // 3
+            + clamp_int(hidden.get("suspicion", 0), 0, 100)
+            + clamp_int(hidden.get("interest", 0), 0, 100) // 2
+            + max(0, -clamp_int(rel.get("好感度", 0), -100, 100)) // 2
+        )
+        if name in mentioned:
+            score += 18
+        if name in scene:
+            score += 12
+        candidates.append((score, name))
+
     if not candidates:
         return None
     return sorted(candidates, reverse=True)[0][1]
+
+
+def _has_actual_contact(name: str, relations: dict | None) -> bool:
+    if not isinstance(relations, dict) or not name:
+        return False
+    rel = (relations.get("npcs", {}) or {}).get(name, {})
+    if isinstance(rel, dict):
+        if int(rel.get("contact_count", 0) or 0) > 0 or int(rel.get("last_interaction_turn", 0) or 0) > 0:
+            return True
+    edge = ((relations.get("social_graph", {}) or {}).get(name, {}) or {}).get("玩家", {})
+    if isinstance(edge, dict) and int(edge.get("attention", 0) or 0) > 0:
+        return True
+    edge = ((relations.get("social_graph", {}) or {}).get(name, {}) or {}).get("?拙振", {})
+    return isinstance(edge, dict) and int(edge.get("attention", 0) or 0) > 0
 
 
 def _select_strategy(npc_stats: dict, player_attrs: dict, hidden: dict, rel: dict, strategies: list[dict]) -> dict | None:

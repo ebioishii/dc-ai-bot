@@ -51573,7 +51573,7 @@
 }
 }
 },
-"revision": "20260331",
+"revision": "20260410",
 "rootUrl": "https://compute.googleapis.com/",
 "schemas": {
 "AWSV4Signature": {
@@ -57617,7 +57617,7 @@ false
 "id": "CachePolicy",
 "properties": {
 "cacheBypassRequestHeaderNames": {
-"description": "Bypass the cache when the specified request headers are matched by name,\ne.g. Pragma or Authorization headers. Values are case-insensitive. Up to 5\nheader names can be specified. The cache is bypassed for all\ncachePolicy.cacheMode settings.",
+"description": "Bypass the cache when the specified request headers are matched by name,\ne.g. Pragma or Authorization headers. Values are case-insensitive. Up to 5\nheader names can be specified. The cache is bypassed for all `cacheMode`\nvalues.",
 "items": {
 "type": "string"
 },
@@ -57625,10 +57625,10 @@ false
 },
 "cacheKeyPolicy": {
 "$ref": "CachePolicyCacheKeyPolicy",
-"description": "The CacheKeyPolicy for this CachePolicy."
+"description": "The cache key configuration. If not specified, the default behavior depends\non the backend type: for Backend Services, the complete request URI is\nused; for Backend Buckets, the request URI is used without the protocol or\nhost, and only query parameters known to Cloud Storage are included."
 },
 "cacheMode": {
-"description": "Specifies the cache setting for all responses from this route.\nIf not specified, the default value is CACHE_ALL_STATIC.",
+"description": "Specifies the cache setting for all responses from this route. If not\nspecified, Cloud CDN uses `CACHE_ALL_STATIC` mode.",
 "enum": [
 "CACHE_ALL_STATIC",
 "FORCE_CACHE_ALL",
@@ -57643,29 +57643,29 @@ false
 },
 "clientTtl": {
 "$ref": "Duration",
-"description": "Specifies a separate client (e.g. browser client) maximum TTL. This is\nused to clamp the max-age (or Expires) value sent to the client.  With\nFORCE_CACHE_ALL, the lesser of client_ttl and default_ttl is used for the\nresponse max-age directive, along with a \"public\" directive.  For\ncacheable content in CACHE_ALL_STATIC mode, client_ttl clamps the max-age\nfrom the origin (if specified), or else sets the response max-age\ndirective to the lesser of the client_ttl and default_ttl, and also\nensures a \"public\" cache-control directive is present.\nIf a client TTL is not specified, a default value (1 hour) will be used.\nThe maximum allowed value is 31,622,400s (1 year)."
+"description": "Specifies a separate client (e.g. browser client) maximum TTL for cached\ncontent. This is used to clamp the max-age (or Expires) value sent to the\nclient. With `FORCE_CACHE_ALL`, the lesser of `clientTtl` and `defaultTtl`\nis used for the response max-age directive, along with a \"public\"\ndirective. For cacheable content in `CACHE_ALL_STATIC` mode, `clientTtl`\nclamps the max-age from the origin (if specified), or else sets the\nresponse max-age directive to the lesser of the `clientTtl` and\n`defaultTtl`, and also ensures a \"public\" cache-control directive is\npresent. The maximum allowed value is 31,622,400s (1 year). If not\nspecified, Cloud CDN uses 3600s (1 hour) for `CACHE_ALL_STATIC` mode.\nCannot exceed `maxTtl`. Cannot be specified when `cacheMode` is\n`USE_ORIGIN_HEADERS`."
 },
 "defaultTtl": {
 "$ref": "Duration",
-"description": "Specifies the default TTL for cached content served by this origin for\nresponses that do not have an existing valid TTL (max-age or s-maxage).\nSetting a TTL of \"0\" means \"always revalidate\".\nThe value of defaultTTL cannot be set to a value greater than that of\nmaxTTL.\nWhen the cacheMode is set to FORCE_CACHE_ALL, the defaultTTL\nwill overwrite the TTL set in all responses. The maximum allowed value is\n31,622,400s (1 year). Infrequently accessed objects may be evicted from\nthe cache before the defined TTL."
+"description": "Specifies the default TTL for cached content for responses that do not have\nan existing valid TTL (max-age or s-maxage). Setting a TTL of \"0\" means\n\"always revalidate\". The value of `defaultTtl` cannot be set to a value\ngreater than that of `maxTtl`. When the `cacheMode` is set to\n`FORCE_CACHE_ALL`, the `defaultTtl` will overwrite the TTL set in all\nresponses. The maximum allowed value is 31,622,400s (1 year). Infrequently\naccessed objects may be evicted from the cache before the defined TTL. If\nnot specified, Cloud CDN uses 3600s (1 hour) for `CACHE_ALL_STATIC` and\n`FORCE_CACHE_ALL` modes. Cannot be specified when `cacheMode` is\n`USE_ORIGIN_HEADERS`."
 },
 "maxTtl": {
 "$ref": "Duration",
-"description": "Specifies the maximum allowed TTL for cached content served by this\norigin.\nCache directives that attempt to set a max-age or s-maxage higher than\nthis, or an Expires header more than maxTTL seconds in the future will\nbe capped at the value of maxTTL, as if it were the value of an\ns-maxage Cache-Control directive.\nHeaders sent to the client will not be modified.\nSetting a TTL of \"0\" means \"always revalidate\".\nThe maximum allowed value is 31,622,400s (1 year). Infrequently accessed\nobjects may be evicted from the cache before the defined TTL."
+"description": "Specifies the maximum allowed TTL for cached content. Cache directives that\nattempt to set a max-age or s-maxage higher than this, or an Expires header\nmore than `maxTtl` seconds in the future will be capped at the value of\n`maxTtl`, as if it were the value of an s-maxage Cache-Control directive.\nHeaders sent to the client will not be modified. Setting a TTL of \"0\" means\n\"always revalidate\". The maximum allowed value is 31,622,400s (1 year).\nInfrequently accessed objects may be evicted from the cache before the\ndefined TTL. If not specified, Cloud CDN uses 86400s (1 day) for\n`CACHE_ALL_STATIC` mode. Can be specified only for `CACHE_ALL_STATIC` cache\nmode."
 },
 "negativeCaching": {
-"description": "Negative caching allows per-status code TTLs to be set, in order\nto apply fine-grained caching for common errors or redirects.\nThis can reduce the load on your origin and improve end-user\nexperience by reducing response latency.\nWhen the cache mode is set to CACHE_ALL_STATIC or USE_ORIGIN_HEADERS,\nnegative caching applies to responses with the specified response code\nthat lack any Cache-Control, Expires, or Pragma: no-cache directives.\nWhen the cache mode is set to FORCE_CACHE_ALL, negative caching applies\nto all responses with the specified response code, and override any\ncaching headers.\nBy default, Cloud CDN will apply the following default TTLs to these\nstatus codes:\nHTTP 300 (Multiple Choice), 301, 308 (Permanent Redirects): 10m\nHTTP 404 (Not Found), 410 (Gone),\n451 (Unavailable For Legal Reasons): 120s\nHTTP 405 (Method Not Found), 501 (Not Implemented): 60s.\nThese defaults can be overridden in negative_caching_policy.",
+"description": "Negative caching allows per-status code TTLs to be set, in order\nto apply fine-grained caching for common errors or redirects.\nThis can reduce the load on your origin and improve end-user\nexperience by reducing response latency.\nWhen the `cacheMode` is set to `CACHE_ALL_STATIC` or\n`USE_ORIGIN_HEADERS`, negative caching applies to responses with\nthe specified response code that lack any Cache-Control, Expires, or\nPragma: no-cache directives. When the `cacheMode` is set to\n`FORCE_CACHE_ALL`, negative caching applies to all responses\nwith the specified response code, and overrides any caching headers. By\ndefault, Cloud CDN applies the following TTLs to these HTTP status codes:\n\n* 300 (Multiple Choice), 301, 308 (Permanent Redirects): 10m\n* 404 (Not Found), 410 (Gone), 451 (Unavailable For Legal Reasons): 120s\n* 405 (Method Not Found), 501 (Not Implemented): 60s\n\nThese defaults can be overridden in `negativeCachingPolicy`.\nIf not specified, Cloud CDN applies negative caching by default.",
 "type": "boolean"
 },
 "negativeCachingPolicy": {
-"description": "Sets a cache TTL for the specified HTTP status code.\nnegative_caching must be enabled to configure negative_caching_policy.\nOmitting the policy and leaving negative_caching enabled will use\nCloud CDN's default cache TTLs.\nNote that when specifying an explicit negative_caching_policy, you\nshould take care to specify a cache TTL for all response codes\nthat you wish to cache. Cloud CDN will not apply any default\nnegative caching when a policy exists.",
+"description": "Sets a cache TTL for the specified HTTP status code.\n`negativeCaching` must be enabled to configure `negativeCachingPolicy`.\nOmitting the policy and leaving `negativeCaching` enabled will use Cloud\nCDN's default cache TTLs. Note that when specifying an explicit\n`negativeCachingPolicy`, you should take care to specify a cache TTL for\nall response codes that you wish to cache. Cloud CDN will not apply any\ndefault negative caching when a policy exists.",
 "items": {
 "$ref": "CachePolicyNegativeCachingPolicy"
 },
 "type": "array"
 },
 "requestCoalescing": {
-"description": "If true then Cloud CDN will combine multiple concurrent cache fill\nrequests into a small number of requests to the origin.",
+"description": "If true then Cloud CDN will combine multiple concurrent cache fill\nrequests into a small number of requests to the origin. If not specified,\nCloud CDN applies request coalescing by default.",
 "type": "boolean"
 },
 "serveWhileStale": {
@@ -57680,7 +57680,7 @@ false
 "id": "CachePolicyCacheKeyPolicy",
 "properties": {
 "excludedQueryParameters": {
-"description": "Names of query string parameters to exclude in cache keys. All other\nparameters will be included. Either specify excluded_query_parameters or\nincluded_query_parameters, not both. '&' and '=' will be percent encoded\nand not treated as delimiters.\n\nNote: This field applies to routes that use backend services. Attempting\nto set it on a route that points exclusively to Backend Buckets will\nresult in a configuration error. For routes that point to a Backend\nBucket, use includedQueryParameters to define which parameters should\nbe a part of the cache key.",
+"description": "Names of query string parameters to exclude in cache keys. All other\nparameters will be included. Either specify `excludedQueryParameters`\nor `includedQueryParameters`, not both. '&' and '=' will be percent\nencoded and not treated as delimiters.\n\nNote: This field applies to routes that use backend services. Attempting\nto set it on a route that points exclusively to Backend Buckets will\nresult in a configuration error. For routes that point to a Backend\nBucket, use `includedQueryParameters` to define which parameters should\nbe part of the cache key.",
 "items": {
 "type": "string"
 },
@@ -57695,7 +57695,7 @@ false
 "type": "boolean"
 },
 "includeQueryString": {
-"description": "If true, include query string parameters in the cache key according to\nincluded_query_parameters and excluded_query_parameters. If neither is\nset, the entire query string will be included. If false, the query string\nwill be excluded from the cache key entirely.\n\nNote: This field applies to routes that use backend services. Attempting\nto set it on a route that points exclusively to Backend Buckets will\nresult in a configuration error.  For routes that point to a Backend\nBucket, use includedQueryParameters to define which parameters should\nbe a part of the cache key.",
+"description": "If true, include query string parameters in the cache key according to\n`includedQueryParameters` and `excludedQueryParameters`. If neither\nis set, the entire query string will be included. If false, the query\nstring will be excluded from the cache key entirely.\n\nNote: This field applies to routes that use backend services. Attempting\nto set it on a route that points exclusively to Backend Buckets will\nresult in a configuration error. For routes that point to a Backend\nBucket, use `includedQueryParameters` to define which parameters should\nbe part of the cache key.",
 "type": "boolean"
 },
 "includedCookieNames": {
@@ -57713,7 +57713,7 @@ false
 "type": "array"
 },
 "includedQueryParameters": {
-"description": "Names of query string parameters to include in cache keys. All other\nparameters will be excluded. Either specify included_query_parameters or\nexcluded_query_parameters, not both. '&' and '=' will be percent encoded\nand not treated as delimiters.",
+"description": "Names of query string parameters to include in cache keys. All other\nparameters will be excluded. Either specify `includedQueryParameters`\nor `excludedQueryParameters`, not both. '&' and '=' will be percent\nencoded and not treated as delimiters.",
 "items": {
 "type": "string"
 },
@@ -68902,7 +68902,7 @@ false
 "properties": {
 "cachePolicy": {
 "$ref": "CachePolicy",
-"description": "Cache policy for this URL Map\u2019s route. Available only for Global\nEXTERNAL_MANAGED load balancer schemes."
+"description": "Specifies the cache policy configuration for matched traffic. Available\nonly for Global `EXTERNAL_MANAGED` load balancer schemes. At least one\nproperty must be specified. This policy cannot be specified if any target\nbackend has Identity-Aware Proxy enabled."
 },
 "corsPolicy": {
 "$ref": "CorsPolicy",

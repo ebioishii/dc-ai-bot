@@ -4,10 +4,13 @@ from pathlib import Path
 from game.startup import (
     RANDOM_FAMILY_VALUE,
     build_opening_story_result,
+    build_starting_objectives,
+    build_starting_relations,
     generate_random_appearance,
     resolve_start_family,
     resolve_start_location,
 )
+from game.npc import get_present_scene_npcs
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -38,6 +41,100 @@ def test_family_start_locations_exist():
         assert resolved["id"] == start_location["location_id"]
         assert resolved["name"]
         assert resolved["room"]
+
+
+def test_locations_have_gameplay_metadata_and_npc_links_are_valid():
+    locations = _load_json("locations.json")["locations"]
+    npcs = _load_json("npcs.json")["npcs"]
+    families = _load_json("families.json")["families"]
+    location_ids = {location["id"] for location in locations}
+
+    for location in locations:
+        assert location.get("description")
+        assert location.get("scene_role")
+        assert isinstance(location.get("default_objectives"), list)
+        assert isinstance(location.get("event_hooks"), list)
+        assert isinstance(location.get("choice_bias"), list)
+
+    assert all(npc.get("location") in location_ids for npc in npcs)
+    assert all((family.get("start_location") or {}).get("location_id") in location_ids for family in families)
+    for family in families:
+        start_id = (family.get("start_location") or {}).get("location_id")
+        contacts = family.get("opening_contacts", {})
+        local_npcs = [npc for npc in npcs if npc.get("location") == start_id]
+        assert local_npcs or contacts.get("host_npc") or contacts.get("peer_npcs")
+
+
+def test_starting_objectives_follow_location_and_contacts():
+    families = _load_json("families.json")["families"]
+    locations = _load_json("locations.json")["locations"]
+    npcs = _load_json("npcs.json")["npcs"]
+
+    for family in families:
+        location = resolve_start_location(family, locations)
+        contacts = family.get("opening_contacts", {})
+        objectives = build_starting_objectives(location, contacts, npcs)
+        objective_text = "\n".join(item["text"] for item in objectives)
+
+        assert objectives
+        assert location["name"] in objective_text
+        assert "承乾宮" not in objective_text or location["id"] == "cheng_qian_gong"
+        assert "陸常在" not in objective_text or contacts.get("host_npc") == "陸常在" or "陸常在" in contacts.get("peer_npcs", [])
+
+
+def test_starting_relations_only_include_start_scene_and_contacts():
+    families = _load_json("families.json")["families"]
+    locations = _load_json("locations.json")["locations"]
+    npcs = _load_json("npcs.json")["npcs"]
+
+    for family in families:
+        location = resolve_start_location(family, locations)
+        contacts = family.get("opening_contacts", {})
+        relations = build_starting_relations(location, contacts, npcs)
+        relation_names = set(relations["npcs"])
+        allowed = {
+            npc["name"] for npc in npcs
+            if npc.get("location") == location["id"]
+        }
+        allowed.add(contacts.get("host_npc"))
+        allowed.update(contacts.get("peer_npcs", []))
+        allowed.discard(None)
+
+        assert relations["schemes"] == []
+        assert relation_names
+        assert relation_names <= allowed
+        assert set(relations["hidden_state"]) == relation_names
+
+
+def test_starting_host_is_not_physically_present_by_default():
+    families = _load_json("families.json")["families"]
+    rich = next(family for family in families if family["id"] == "rich")
+    contacts = rich["opening_contacts"]
+    host = contacts["host_npc"]
+    peer = contacts["peer_npcs"][0]
+    status = {
+        "location": rich["start_location"]["location_id"],
+        "location_id": rich["start_location"]["location_id"],
+        "turn_count": 1,
+        "scene_state": {"present_npcs": [host, peer]},
+    }
+    profile = {"family": "rich"}
+
+    present = get_present_scene_npcs(status["location"], profile=profile, status=status, player_input="先觀察偏殿")
+
+    assert host not in present
+
+
+def test_starting_scene_only_has_peer_present_by_default():
+    families = _load_json("families.json")["families"]
+    rich = next(family for family in families if family["id"] == "rich")
+    status = {"location": rich["start_location"]["location_id"], "turn_count": 0}
+    profile = {"family": rich["id"]}
+
+    present = get_present_scene_npcs(rich["start_location"]["location_id"], profile=profile, status=status)
+
+    assert "陸常在" in present
+    assert "李貴妃" not in present
 
 
 def test_random_appearance_is_non_empty_and_modal_safe():

@@ -31,12 +31,6 @@ def clamp_recent_turns(value: int | None = None) -> int:
     return max(RECENT_TURNS_MIN, min(RECENT_TURNS_MAX, turns))
 
 
-def strip_choice_block(text: str) -> str:
-    if not text:
-        return ""
-    return re.split(r"\n\s*【可選行動】", str(text), maxsplit=1)[0].strip()
-
-
 def compact_turn(turn: dict) -> dict:
     user = str((turn or {}).get("user", "")).strip()
     bot = strip_choice_block(str((turn or {}).get("bot", "")).strip())
@@ -44,6 +38,14 @@ def compact_turn(turn: dict) -> dict:
         "user": user[:160],
         "bot": bot[:260] + ("…" if len(bot) > 260 else ""),
     }
+
+def strip_choice_block(text: str) -> str:
+    if not text:
+        return ""
+    text = str(text)
+    for pattern in (r"\n\s*【可選行動】", r"\n\s*【當前目標】", r"\n\s*??貉???"):
+        text = re.split(pattern, text, maxsplit=1)[0]
+    return text.strip()
 
 
 def recent_turns_for_prompt(memory: dict | None, recent_turns: int | None = None) -> list[dict]:
@@ -78,6 +80,7 @@ def normalize_scene_state(
     location = status.get("location_name") or status.get("location") or status.get("location_id") or ""
     state["location"] = str(location)
 
+    explicit = set(state.get("explicit_present_npcs", []) or [])
     npcs = [str(name).strip() for name in (scene_npcs or state.get("present_npcs") or []) if str(name).strip()]
     state["present_npcs"] = list(dict.fromkeys(npcs))[:8]
     state["visible_player_action"] = str(player_input).strip()[:160]
@@ -136,8 +139,9 @@ def build_model_context(
     recent_turns: int | None = None,
 ) -> dict:
     memory = memory or {}
+    status_scene_state = status.get("scene_state") if isinstance(status, dict) else None
     scene_state = normalize_scene_state(
-        memory.get("scene_state"),
+        status_scene_state if isinstance(status_scene_state, dict) else memory.get("scene_state"),
         status=status,
         relations=relations,
         scene_npcs=scene_npcs,
@@ -240,24 +244,6 @@ def merge_scene_summary(
             facts.append(f"NPC態度：{name}{'、'.join(mood)}。")
 
     return _trim_summary("".join(_dedupe_keep_tail(facts, 24)), SCENE_SUMMARY_MAX_CHARS)
-
-
-def should_offer_choices(player_input: str, judge_result: dict | None, authoritative_result: dict | None) -> bool:
-    text = str(player_input or "")
-    advice_terms = ("建議", "怎麼辦", "不知道", "不知", "想不到", "給我選項", "可選", "選項", "下一步", "該做什麼")
-    if any(term in text for term in advice_terms):
-        return True
-    risk = (judge_result or {}).get("risk_level")
-    if risk == "high":
-        return True
-    if (authoritative_result or {}).get("allowed") is False:
-        return True
-    world_event = (authoritative_result or {}).get("world_event", {}) if isinstance(authoritative_result, dict) else {}
-    if isinstance(world_event, dict) and world_event.get("type") not in (None, "", "none"):
-        return True
-    if (authoritative_result or {}).get("denied_assumptions"):
-        return True
-    return False
 
 
 def classify_event_size(judge_result: dict | None, authoritative_result: dict | None) -> str:

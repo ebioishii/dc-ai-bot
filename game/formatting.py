@@ -3,37 +3,31 @@ from game.state import get_rules, get_punishments, get_rewards, get_ranks
 
 def _affection_tier(v: int) -> str:
     if v > 80: return "盟友"
-    if v > 60: return "友善"
-    if v > 30: return "中立"
-    if v >= 0: return "警惕"
+    if v > 60: return "信任"
+    if v > 30: return "友善"
+    if v > 10: return "中立偏暖"
+    if v >= -10: return "初識"
+    if v >= -30: return "戒備"
     return "敵意"
 
 
 def format_player_relations(relations):
-    """將玩家與 NPC 的關係格式化"""
-    npcs = relations.get('npcs', {}) if relations else {}
-    companions = relations.get('companions', {}) if relations else {}
-    rel_info = ""
-
-    if npcs:
-        for npc_id, data in npcs.items():
-            好感度 = data.get('好感度', 0)
-            恩怨 = data.get('恩怨', '無')
-            tier = _affection_tier(好感度)
-            emotion = data.get('emotion_state', {})
-            anger = emotion.get('anger', 0)
-            fear = emotion.get('fear', 0)
-            alive = data.get('alive', True)
-            life_state = "已死亡，不得登場、不得說話、不得被其他角色當作仍活著互動" if alive is False else "存活"
-            rel_info += f"• {npc_id}：{life_state}，好感度 {好感度}（{tier}），恩怨：{恩怨}，憤怒：{anger}，恐懼：{fear}\n"
-
-    active_companions = {k: v for k, v in companions.items() if v.get('appear_count', 0) >= 3}
-    if active_companions:
-        rel_info += "\n【玩家身旁已知隨侍】\n"
-        for name, data in active_companions.items():
-            rel_info += f"• {name}（{data.get('role', '隨侍')}）：{data.get('desc', '無額外描述')}\n"
-
-    return rel_info if rel_info.strip() else "（尚無記錄的 NPC 關係）"
+    npcs = relations.get('npcs', {}) if isinstance(relations, dict) else {}
+    companions = relations.get('companions', {}) if isinstance(relations, dict) else {}
+    lines = []
+    for npc_id, data in npcs.items():
+        if not isinstance(data, dict):
+            continue
+        affection = data.get('好感度', data.get('憟賣?摨?', 0))
+        grudge = data.get('恩怨', data.get('?拇?', '無'))
+        emotion = data.get('emotion_state', {}) if isinstance(data.get('emotion_state'), dict) else {}
+        alive = data.get('alive', True)
+        state = "已死亡" if alive is False else "存活"
+        lines.append(f"{npc_id}：{state}，好感度 {affection}（{_affection_tier(int(affection or 0))}），恩怨：{grudge}，怒氣：{emotion.get('anger', 0)}，懼意：{emotion.get('fear', 0)}")
+    active_companions = {k: v for k, v in companions.items() if isinstance(v, dict) and v.get('appear_count', 0) >= 3}
+    for name, data in active_companions.items():
+        lines.append(f"隨侍 {name}：{data.get('role', '隨侍')}")
+    return "\n".join(lines) if lines else "目前沒有明確 NPC 關係。"
 
 
 def format_game_rules():

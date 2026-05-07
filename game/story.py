@@ -69,9 +69,10 @@ def make_gm_system_instruction(game_rules: str) -> str:
 十六、player_relations 中記載了各 NPC 的好感度，NPC 的態度必須反映此數值：
    好感度 > 80（盟友）：主動幫助、可能透露機密；
    好感度 60~80（友善）：樂意配合，態度友善；
-   好感度 30~60（中立）：禮節性應對；
-   好感度 0~30（警惕）：冷淡，不主動幫助，可能試探；
-   好感度 < 0（敵意）：可能刁難、陷害或舉報。
+   好感度 30~60（友善）：願意多說半句，但仍守宮規；
+   好感度 10~30（中立偏暖）：禮節性應對，不主動交心；
+   好感度 -10~10（初識）：正常客氣，不要寫成不悅或敵意；
+   好感度 < -10（戒備/敵意）：可能冷淡、試探、刁難或舉報。
 
 ▌懲處與恩賞
 十七、當玩家觸犯宮廷規矩，相關 NPC 必須依照「責處規制」做出反應；懲處手段（如板子、掌嘴、禁足、賜死）應出現在敘事中，不可忽視違規行為。
@@ -108,6 +109,17 @@ async def call_story_ai(system, user):
         "choices": choices if isinstance(choices, list) else [],
         "state_update": update
     }
+
+
+def suppress_choices_when_disabled(story_result: dict, choices_required: bool) -> dict:
+    """Drop JSON choices from Story Writer when the current surface should not show them."""
+    if not isinstance(story_result, dict):
+        return story_result
+    if choices_required:
+        return story_result
+    cleaned = dict(story_result)
+    cleaned["choices"] = []
+    return cleaned
 
 
 def build_story_prompt(
@@ -148,7 +160,7 @@ def build_story_prompt(
         "task": "Write the next player-facing story beat. Include choices only when choices_required is true.",
         "output_schema": {
             "reply": "給玩家看的劇情文字",
-            "choices": "[] unless choices_required is true; then provide 2-4 strategic choices with id/text/style/risk/effect_hint/mechanical_effect.",
+            "choices": "[] unless choices_required is true; then provide 2-4 strategic choices with id/text/style/risk/reward/effect_hint/mechanical_effect.",
             "state_update": {}
         },
         "output_policy": {
@@ -160,10 +172,18 @@ def build_story_prompt(
         },
         "hard_rules": [
             "You only write story; you do not decide rules.",
+            "The first paragraph must directly resolve the player's latest visible action, not replay the previous scene or jump back to an earlier setup.",
+            "Do not merely restate the player's action. After at most one short clause of setup, show the NPC response, visible consequence, or concrete clue.",
+            "Do not mention objective progress, short-term goal progress, percentages, or phrases like '向前推進了一小步' in player-facing prose. Those belong only in /hint.",
+            "Avoid stock transition lines. Never write: '你沒有立刻得到明白答案', '回話順序與侍從動線', '話落之後，席間的態度', '簾外腳步聲停住', or '原本平順的話題被迫換了節奏'.",
+            "Do not repeat facts or descriptions already present in recent_turns unless the newest player action directly changes them.",
             "Do not overrule authoritative_result.",
+            "Story Writer must write from authoritative_result.turn_progress and make the consequence visible without exposing numbers.",
+            "不得替玩家補充未明說的心理活動、意圖或感受。只能描寫外在行動、環境反應與 NPC 反應。",
             "Do not create, cancel, rename, or redirect NPC schemes. Only reflect scheme_pressure, visible_clues, and scheme_events provided by authoritative_result.",
             "Never reveal scheme ids, hidden goals, numeric progress, numeric risk, or JSON field names in player-facing prose.",
             "Do not add major events that are absent from authoritative_result.confirmed_events, npc_actions, world_event, or state_update.",
+            "NPCs may not give, award, hand over, or place an item in the player's possession unless authoritative_result.state_update.inventory_add explicitly contains that item.",
             "Do not turn judge_result.assumptions into happened facts.",
             "If authoritative_result.denied_assumptions includes an event, the reply must say it did not happen or remains unconfirmed.",
             "Do not reveal hidden_state numeric values, labels, or JSON keys in player-facing prose.",
@@ -171,13 +191,19 @@ def build_story_prompt(
             "You must include all provided npc_actions and world_event if world_event.type is not none.",
             "If world_event.type is none, do not invent interruptions, arrivals, summons, object discoveries, or overheard events.",
             "Do not write the player's private thoughts, fear, intent, or unspoken emotions. Only describe visible posture or consequences.",
+            "Avoid writing the player's actions in embellished form unless the player explicitly did them. Do not use phrases like '你不動聲色地', '你定了定神', or '心中'.",
             "If choices_required is false, choices must be [].",
+            "If choices_required is false, do not write numbered options, action suggestions, effect hints, or an action menu in reply.",
             "If choices_required is true, choices must be concrete, actionable, and mechanically different.",
+            "When authoritative_result.strategic_choices is present, copy those choices exactly unless wording must be shortened; preserve id/style/risk/reward/effect_hint/mechanical_effect.",
+            "Each choice must include id, text, style, risk, reward, effect_hint, and mechanical_effect. Use 2-4 choices with at least two styles, one low risk option, and one medium/high risk higher reward option.",
             "state_update is only a suggestion and may be ignored by code.",
             "Only mention NPCs by name if they appear in selected_npcs or are explicitly named in authoritative_result.npc_actions. Never invent, import, or introduce NPC names not present in those sources.",
+            "selected_npcs may include palace residents or off-screen power holders for context. Only NPCs in present_npc_names or authoritative_result.npc_actions may speak, enter dialogue, react as physically present, or take action.",
             "permitted_npc_names lists every NPC you may name. Referring to any other person by name is forbidden."
         ],
         "permitted_npc_names": selected_names,
+        "present_npc_names": turn_context.get("scene_state", {}).get("present_npcs", []),
         "player_input": player_input,
         "judge_result": judge_result,
         "authoritative_result": compact_authoritative,
@@ -213,6 +239,8 @@ def _compact_authoritative_result(authoritative_result: dict | None) -> dict:
         "constraints": authoritative_result.get("constraints", []),
         "npc_actions": authoritative_result.get("npc_actions", []),
         "world_event": authoritative_result.get("world_event", {"type": "none", "description": ""}),
+        "turn_progress": authoritative_result.get("turn_progress", {}),
+        "strategic_choices": authoritative_result.get("strategic_choices", []),
         "state_update": compact_update,
     }
 
@@ -232,40 +260,73 @@ def _compact_npc(npc: dict) -> dict:
 
 
 def fallback_story_result(authoritative_result: dict) -> dict:
+    """Final deterministic backup narration when Story Writer output fails validation."""
+    authoritative_result = authoritative_result if isinstance(authoritative_result, dict) else {}
     if authoritative_result.get("allowed") is False:
-        reason = authoritative_result.get("reason") or "這個行動與目前狀態衝突，未能成立。"
-        reply = f"{reason} 宮中局勢仍按已確認的狀態推進，未經裁決的假設不會成為事實。"
+        reason = str(authoritative_result.get("reason") or "這一步暫時不能照原意推進。").strip()
+        reply = f"{reason} 殿內的話音被壓低，旁人只當一切仍按規矩走，留給你的餘地也因此變窄。"
     else:
-        reply = "宮中消息一時混雜，你先按下心緒，確認眼前可行之事。"
+        progress = authoritative_result.get("turn_progress", {})
+        progress_type = progress.get("type") if isinstance(progress, dict) else ""
+        npc_actions = authoritative_result.get("npc_actions", [])
+        world_event = authoritative_result.get("world_event", {}) if isinstance(authoritative_result.get("world_event"), dict) else {}
+        if isinstance(npc_actions, list) and npc_actions:
+            actor = str(npc_actions[0].get("npc") or "對方").strip()
+            desc = str(npc_actions[0].get("description") or "").strip()
+            lead = desc if actor in desc else f"{actor}{desc}" if desc.startswith(("把", "借", "順", "沒有", "收")) else f"{actor}有了反應"
+            reply = f"{lead}。她沒有把話說死，卻讓旁人看出這句話不能再照原樣追下去。"
+        elif world_event.get("type") and world_event.get("type") != "none":
+            desc = str(world_event.get("description") or "").strip()
+            reply = desc or "殿中忽有旁人傳話，談話被迫收住。"
+        elif progress_type == "new_info":
+            reply = "對方避開了最要緊的字眼，卻在停頓處露出破綻：她更在意這件事被誰聽見，而不是事情本身。"
+        elif progress_type == "relation_shift":
+            reply = "對方的語氣比方才鬆了一分，仍守著規矩，卻不再急著把話題推開。"
+        elif progress_type == "risk_change":
+            reply = "這一步讓場面安靜了片刻。茶盞被重新擺正，旁人的目光也比先前更有分量，後續行事需要更仔細地拿捏聲量。"
+        elif progress_type == "objective_update":
+            desc = str(progress.get("description") or "").strip() if isinstance(progress, dict) else ""
+            forbidden_progress_words = ("短期目標", "向前推進", "進度", "%")
+            if desc and not any(word in desc for word in forbidden_progress_words):
+                reply = desc
+            else:
+                reply = "對方沒有把話說透，卻在停頓裡露出顧忌；這份顧忌本身，已經足夠讓局面往前挪動。"
+        else:
+            reply = "對方按禮回了一句，沒有多給承諾；可她避開的那一處，正好能留作下一步追問。"
+
+    choices = authoritative_result.get("strategic_choices")
+    if isinstance(choices, list) and 2 <= len(choices) <= 4:
+        return {"reply": reply, "choices": choices, "state_update": {}}
     return {
         "reply": reply,
         "choices": [
             {
-                "id": "choice_1",
-                "text": "先退半步觀察四周，確認目前有哪些人在場",
+                "id": "observe_low",
+                "text": "先收住話頭，觀察席間誰接話、誰避開視線",
                 "style": "observe",
                 "risk": "low",
-                "effect_hint": "降低誤判風險，較可能獲得場面線索。",
-                "mechanical_effect": {"target": "scene", "relation_delta": 0, "suspicion_delta": -1, "anger_delta": 0, "info_gain": 1, "reputation_delta": 0}
+                "reward": "low",
+                "effect_hint": "穩健累積線索，較不容易引人戒備。",
+                "mechanical_effect": {"target": "scene", "trust_delta": 0, "suspicion_delta": -1, "anger_delta": 0, "intel_gain": 1, "reputation_delta": 0, "objective_progress_delta": 3},
             },
             {
-                "id": "choice_2",
-                "text": "委婉詢問身邊可信之人，釐清剛才的狀況",
-                "style": "humble",
-                "risk": "medium",
-                "effect_hint": "可能取得情報，但會暴露你在意此事。",
-                "mechanical_effect": {"target": "nearest_ally", "relation_delta": 1, "suspicion_delta": 1, "anger_delta": 0, "info_gain": 1, "reputation_delta": 0}
-            },
-            {
-                "id": "choice_3",
-                "text": "直接追問對方話中未盡之意",
+                "id": "probe_medium",
+                "text": "順著方才的話題輕問一句，試探對方願意透露多少",
                 "style": "probe",
-                "risk": "high",
-                "effect_hint": "若對方鬆口可得關鍵訊息，失敗則容易引人起疑。",
-                "mechanical_effect": {"target": "primary_npc", "relation_delta": -1, "suspicion_delta": 4, "anger_delta": 1, "info_gain": 2, "reputation_delta": 0}
-            }
+                "risk": "medium",
+                "reward": "medium",
+                "effect_hint": "可能得到更明確情報，也會讓對方記住你的關注點。",
+                "mechanical_effect": {"target": "primary_npc", "trust_delta": 0, "suspicion_delta": 2, "anger_delta": 0, "intel_gain": 2, "reputation_delta": 0, "objective_progress_delta": 8},
+            },
+            {
+                "id": "retreat_low",
+                "text": "藉整理茶盞暫退半步，把主動權留到下一輪",
+                "style": "retreat",
+                "risk": "low",
+                "reward": "low",
+                "effect_hint": "降低當下壓力，但進展較慢。",
+                "mechanical_effect": {"target": "self", "trust_delta": 0, "suspicion_delta": -2, "anger_delta": 0, "intel_gain": 0, "reputation_delta": 0, "objective_progress_delta": 1},
+            },
         ],
-        "state_update": {}
+        "state_update": {},
     }
-
-

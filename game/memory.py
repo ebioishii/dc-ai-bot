@@ -2,7 +2,7 @@ from __future__ import annotations
 import re
 
 from game.context import compact_memory_window
-from game.state import load_player_memory, save_player_data
+from game.state import load_player_memory, normalize_memory_record, save_player_data
 
 def load_fact_sheet(user_id) -> str:
     memory = load_player_memory(user_id)
@@ -25,7 +25,7 @@ def update_fact_sheet(user_id, correction: str, result_summary: str):
     # 只保留最近 10 條修正事實
     memory['fact_sheet_items'] = existing[-10:]
     memory['fact_sheet'] = "\n".join(memory['fact_sheet_items'])
-    save_player_data(user_id, 'memory', memory)
+    save_player_data(user_id, 'memory', normalize_memory_record(memory))
 
 
 def build_history_summary(short_term: list) -> str:
@@ -73,31 +73,60 @@ def manage_memory(user_id):
         return
 
     memory, summarized = compact_memory_window(memory)
-    save_player_data(user_id, "memory", memory)
+    save_player_data(user_id, "memory", normalize_memory_record(memory))
     if summarized:
         print("✅ 記憶滾動：已壓縮舊對話至 scene_summary")
 
 
 def update_memory(user_id, player_input, reply, status=None, relations=None) -> dict:
-    memory = load_player_memory(user_id) or {
+    memory = normalize_memory_record(load_player_memory(user_id) or {
         "long_term_summary": "",
         "short_term": [],
         "fact_sheet": "",
         "fact_sheet_items": [],
         "scene_summary": "",
-        "scene_state": {},
         "summary_turns_since_update": 0
-    }
+    }, status)
     short_term = memory.get("short_term", [])
-    short_term.append({"user": player_input, "bot": reply})
+    short_term.append({"user": str(player_input or ""), "bot": clean_reply_for_memory(reply)})
     memory["short_term"] = short_term
     memory["summary_turns_since_update"] = int(memory.get("summary_turns_since_update", 0) or 0) + 1
     memory, summarized = compact_memory_window(memory, status=status, relations=relations)
-    save_player_data(user_id, "memory", memory)
+    save_player_data(user_id, "memory", normalize_memory_record(memory, status))
     return {
         "summary_triggered": summarized,
         "recent_turns": len(memory.get("short_term", [])),
         "summary_used": bool(memory.get("scene_summary")),
     }
+
+
+def clean_reply_for_memory(reply) -> str:
+    """Store only durable narration, not Discord UI blocks or rule-engine labels."""
+    text = str(reply or "").strip()
+    if not text:
+        return ""
+    split_markers = (
+        "\n\n【可選行動】",
+        "\n【可選行動】",
+        "\n\n【當前目標】",
+        "\n【當前目標】",
+        "\n\n??貉??",
+        "\n??貉??",
+    )
+    for marker in split_markers:
+        index = text.find(marker)
+        if index >= 0:
+            text = text[:index].strip()
+    mechanical_prefixes = (
+        "短期目標向前推進了一小步。",
+        "短期目標向前推進了一小步。 ",
+        "短期目標向前推進了一小步。",
+        "你沒有立刻得到明白答案，但殿內的回話順序與侍從動線已經露出一點端倪，足夠支撐下一步判斷。",
+        "話落之後，席間的態度有了細微變化。",
+    )
+    for prefix in mechanical_prefixes:
+        if text.startswith(prefix):
+            text = text[len(prefix):].strip()
+    return text
 
 

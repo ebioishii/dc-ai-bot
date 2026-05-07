@@ -97,6 +97,43 @@ def get_scene_npcs(location: str) -> str:
     scene = [npc['name'] for npc in npcs if npc.get('location') == location]
     return "、".join(scene) if scene else "無"
 
+def get_present_scene_npcs(location: str, profile: dict | None = None, status: dict | None = None, player_input: str = "") -> list[str]:
+    """Return NPCs physically present by default, not every resident of the palace."""
+    profile = profile or {}
+    status = status or {}
+    family_id = profile.get("family")
+    start_host = ""
+    start_location = ""
+    peer_npcs: list[str] = []
+    try:
+        from game.state import get_families
+        for family in get_families():
+            if family.get("id") == family_id:
+                start_location = (family.get("start_location") or {}).get("location_id", "")
+                contacts = family.get("opening_contacts") or {}
+                start_host = str(contacts.get("host_npc") or "").strip()
+                peer_npcs = [str(name).strip() for name in contacts.get("peer_npcs", []) if str(name).strip()]
+                break
+    except Exception:
+        pass
+
+    scene_state = status.get("scene_state") if isinstance(status, dict) else {}
+    explicit_present = []
+    if isinstance(scene_state, dict) and isinstance(scene_state.get("explicit_present_npcs"), list):
+        explicit_present = [str(name).strip() for name in scene_state.get("explicit_present_npcs", []) if str(name).strip()]
+
+    present: list[str] = []
+    if isinstance(scene_state, dict) and isinstance(scene_state.get("present_npcs"), list):
+        present.extend(str(name).strip() for name in scene_state.get("present_npcs", []) if str(name).strip())
+
+    if location == start_location:
+        if start_host and start_host not in explicit_present:
+            present = [name for name in present if name != start_host]
+        present.extend(peer_npcs)
+
+    present.extend(explicit_present)
+    return list(dict.fromkeys(present))
+
 
 def detect_extreme_action(text: str) -> dict:
     """
@@ -177,36 +214,51 @@ def detect_affection_change(text: str) -> int:
 
 
 def update_npc_affection(user_id, npc_name: str, delta: int):
-    """更新單一 NPC 的好感度，上下限 -100 ~ 100"""
+    """Update the canonical public affection field."""
     relations = load_player_relations(user_id) or {'npcs': {}, 'companions': {}}
     npcs = relations.setdefault('npcs', {})
-    if npc_name not in npcs:
-        npcs[npc_name] = {
-            '好感度': 10, '恩怨': '初次見面',
-            'emotion_state': {'anger': 0, 'fear': 0},
-            'alive': True
-        }
-    current = npcs[npc_name].get('好感度', 10)
-    npcs[npc_name]['好感度'] = max(-100, min(100, current + delta))
+    npc_data = npcs.setdefault(npc_name, {
+        '好感度': 0,
+        '恩怨': '無',
+        'emotion_state': {'anger': 0, 'fear': 0},
+        'alive': True,
+    })
+    current = npc_data.get('好感度', npc_data.get('憟賣?摨?', 0))
+    npc_data['好感度'] = max(-100, min(100, int(current or 0) + int(delta or 0)))
+    npc_data.pop('憟賣?摨?', None)
+    npc_data.setdefault('恩怨', npc_data.pop('?拇?', '無'))
     save_player_data(user_id, 'relations', relations)
 
 
+INVALID_COMPANION_NAMES = {
+    "你命", "身旁", "身旁的", "旁人", "宮人", "宮女", "太監", "侍女", "嬤嬤",
+    "對方", "有人", "眾人", "她們", "他們", "自己", "玩家", "娘娘", "小主",
+}
+
+
 def extract_companion_candidates(text: str) -> list:
-    """從文字中抓取潛在隨侍名稱（1~3 字名 + 身份詞）"""
     roles = [re.escape(role) for role in COMPANION_ROLES if role]
     if not roles:
         return []
-    pattern = r'([一-龥]{1,3})(?:' + '|'.join(roles) + ')'
-    return re.findall(pattern, text)
+    known_npcs = {npc.get("name") for npc in get_npcs() if isinstance(npc, dict)}
+    pattern = r"([\u4e00-\u9fff]{2,3})(?:姑姑|宮女|侍女|嬤嬤|太監|隨侍|丫鬟)"
+    candidates = []
+    for name in re.findall(pattern, str(text or "")):
+        name = name.strip("的了著過在向與和")
+        if len(name) < 2 or name in INVALID_COMPANION_NAMES or name in known_npcs:
+            continue
+        if any(bad in name for bad in ("身旁", "你", "她", "他", "自己")):
+            continue
+        candidates.append(name)
+    return list(dict.fromkeys(candidates))[:3]
 
 
 def update_companion_tracking(user_id, text: str):
-    """累計隨侍出現次數，>= 3 次自動晉升為 companions"""
     relations = load_player_relations(user_id) or {'npcs': {}, 'companions': {}}
     companions = relations.setdefault('companions', {})
     candidates = extract_companion_candidates(text)
     changed = False
-    for name in set(candidates):
+    for name in candidates:
         if name not in companions:
             companions[name] = {'role': '隨侍', 'desc': '', 'appear_count': 1}
             changed = True
@@ -241,6 +293,8 @@ def default_hidden_state_for_npc(npc_name: str, npc: dict | None = None, relatio
         "interest": base_interest,
         "anger": clamp_int(emotion.get("anger", 10), 0, 100, 10),
         "trust": clamp_int(relation.get("好感度", 0), -100, 100, 0),
+        "threat": 0,
+        "intel_known": [],
         "test_intent": False
     }
 
@@ -268,9 +322,7 @@ def ensure_hidden_state(relations: dict | None, gamedata: dict, game_state: dict
     npcs_by_name = _npc_by_name(gamedata)
     names = set(_mentioned_known_npcs(player_input, gamedata))
     names.update((game_state or {}).get("scene_npcs", []) or [])
-    for name, npc in npcs_by_name.items():
-        if _is_high_rank_npc(npc, gamedata):
-            names.add(name)
+    names.update((relations.get("npcs", {}) or {}).keys())
     for name in names:
         if not name or rel_npcs.get(name, {}).get("alive") is False:
             continue
@@ -308,6 +360,7 @@ def hidden_state_cues(relations: dict | None, npc_names: list[str]) -> dict:
             "suspicion_cue": _hidden_band(state.get("suspicion", 0)),
             "anger_cue": _hidden_band(state.get("anger", 0), 45, 70),
             "interest_cue": _hidden_band(state.get("interest", 0), 45, 70),
+            "threat_cue": _hidden_band(state.get("threat", 0), 45, 70),
             "trust_cue": "guarded" if clamp_int(state.get("trust", 0), -100, 100) < 0 else "neutral_or_warmer",
             "test_intent": bool(state.get("test_intent", False))
         }
@@ -340,50 +393,59 @@ def _primary_npc(mentioned_npcs: list[str], game_state: dict, gamedata: dict, re
     for name in game_state.get("scene_npcs", []) or []:
         if name in npcs_by_name and rel_npcs.get(name, {}).get("alive") is not False:
             return name
-    for name, npc in npcs_by_name.items():
-        if _is_high_rank_npc(npc, gamedata) and rel_npcs.get(name, {}).get("alive") is not False:
-            return name
     return None
 
 
 def plan_npc_actions(judge_result: dict, game_state: dict, relations: dict | None, gamedata: dict) -> list[dict]:
+    """Final planner: only present NPCs act, and action style follows npcs.json."""
     rel_npcs = (relations or {}).get("npcs", {})
     npcs_by_name = _npc_by_name(gamedata)
     mentioned = [str(x) for x in judge_result.get("mentioned_npcs", []) if str(x).strip()]
     primary = _primary_npc(mentioned, game_state, gamedata, relations)
-    if not primary or rel_npcs.get(primary, {}).get("alive") is False:
+    scene_names = {str(name).strip() for name in (game_state or {}).get("scene_npcs", []) if str(name).strip()}
+    if not primary or primary not in scene_names or rel_npcs.get(primary, {}).get("alive") is False:
         return []
     npc = npcs_by_name.get(primary, {})
     hidden = _hidden_state_for(relations, primary)
     if not _is_high_rank_npc(npc, gamedata):
         return []
 
+    stats = get_npc_stats(npc)
+    personality = str(npc.get("personality", ""))
+    hidden_agenda = str((npc.get("hidden") or {}).get("hidden_agenda", ""))
     suspicion = clamp_int(hidden.get("suspicion", 0), 0, 100)
     anger = clamp_int(hidden.get("anger", 0), 0, 100)
+    threat = clamp_int(hidden.get("threat", 0), 0, 100)
     tone = judge_result.get("social_tone", "neutral")
     risk = judge_result.get("risk_level", "medium")
+    cunning = max(clamp_int(stats.get("心機", 0), 0, 100), clamp_int(stats.get("權謀", 0), 0, 100))
 
+    def action(kind: str, description: str, effect: dict) -> list[dict]:
+        return [{
+            "npc": primary,
+            "type": kind,
+            "action": kind if kind != "redirect" else "redirect_topic",
+            "description": description,
+            "mechanical_effect": effect,
+            "personality_basis": personality[:120],
+            "hidden_agenda_basis": hidden_agenda[:120],
+            "stat_basis": {"cunning": cunning},
+        }]
+
+    indirect = any(word in personality + hidden_agenda for word in ("牆頭草", "背後", "依附", "試探", "掌握", "權力"))
+    blunt = any(word in personality for word in ("直率", "暴躁", "傲慢", "強勢"))
     if suspicion >= 65 or hidden.get("test_intent") is True:
-        return [{
-            "npc": primary,
-            "action": "test_player",
-            "description": f"{primary}刻意拋出一句看似尋常的話，試探玩家是否急於辯解或露出破綻。",
-            "mechanical_effect": {"suspicion_delta": 5}
-        }]
-    if anger >= 55 or tone == "rude":
-        return [{
-            "npc": primary,
-            "action": "pressure_player",
-            "description": f"{primary}收緊語氣，讓近旁侍從留意玩家接下來的反應。",
-            "mechanical_effect": {"anger_delta": 4, "suspicion_delta": 3}
-        }]
-    if risk == "high" and tone in {"probing", "evasive", "flattering"}:
-        return [{
-            "npc": primary,
-            "action": "redirect_topic",
-            "description": f"{primary}不正面回答，反而把話題轉回玩家身上。",
-            "mechanical_effect": {"suspicion_delta": 3}
-        }]
+        if indirect or cunning >= 60:
+            return action("test", f"{primary}借一句尋常問候試探玩家來意，話面溫和，卻把可疑處輕輕挑起。", {"suspicion_delta": 5, "interest_delta": 1})
+        return action("withhold_info", f"{primary}把話留在規矩裡，不肯把真正意思說透。", {"suspicion_delta": 2})
+    if anger >= 55 or tone == "rude" or threat >= 60:
+        if blunt:
+            return action("pressure", f"{primary}語氣壓低，直接把分寸擺到玩家面前。", {"anger_delta": 4, "suspicion_delta": 3, "trust_delta": -1})
+        return action("soft_attack", f"{primary}把不悅藏進一句客氣話裡，讓旁人聽得出提醒，卻挑不出明面錯處。", {"anger_delta": 2, "suspicion_delta": 3, "trust_delta": -1})
+    if suspicion >= 50 and tone in {"probing", "evasive", "flattering"}:
+        if indirect or cunning >= 60:
+            return action("soft_attack", f"{primary}順著話頭笑了一句，像玩笑，實則把玩家過於急切之處點給旁人看。", {"suspicion_delta": 4, "trust_delta": -1, "interest_delta": 1})
+        return action("redirect", f"{primary}沒有接住追問，只把話題撥回無害的宮規與日常。", {"suspicion_delta": 3})
+    if risk == "high":
+        return action("withhold_info", f"{primary}收住原本要說的話，只留下一句可進可退的場面話。", {"suspicion_delta": 2})
     return []
-
-
